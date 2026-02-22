@@ -23,6 +23,14 @@
         input[type="range"]::-webkit-slider-runnable-track { background: #1e293b; height: 6px; border-radius: 3px; }
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; height: 20px; width: 20px; background: #3b82f6; border-radius: 50%; margin-top: -7px; border: 2px solid #020617; }
         input { color: white !important; }
+        
+        /* 레이아웃 고정을 위한 스타일 */
+        .pressure-container {
+            height: 180px; /* 고정 높이 확보 */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
     </style>
 </head>
 <body>
@@ -72,8 +80,18 @@
             
             const timerRef = useRef(null);
             const audioCtx = useRef(null);
+            const voicesRef = useRef([]);
 
             const currentRecipe = recipes[selectedIdx];
+
+            // 목소리 로드
+            useEffect(() => {
+                const loadVoices = () => {
+                    voicesRef.current = window.speechSynthesis.getVoices();
+                };
+                loadVoices();
+                window.speechSynthesis.onvoiceschanged = loadVoices;
+            }, []);
 
             const showToast = (msg) => {
                 setToast(msg);
@@ -82,19 +100,25 @@
 
             const initAudio = async () => {
                 try {
+                    // iOS 무음 우회용 오디오 재생
                     const silentAudio = document.getElementById('silent-audio');
                     if (silentAudio) {
-                        silentAudio.play().catch(e => console.log("Silent audio play failed", e));
+                        silentAudio.play().catch(e => console.log("Silent audio failed", e));
                     }
+                    
+                    // Web Audio Context 활성화
                     if (!audioCtx.current) {
                         audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
                     }
                     if (audioCtx.current.state === 'suspended') {
                         await audioCtx.current.resume();
                     }
+
+                    // iOS TTS 잠금 해제: 사용자 인터랙션 내에서 빈 발화 실행
                     window.speechSynthesis.cancel();
-                    const dummyUtterance = new SpeechSynthesisUtterance("");
-                    window.speechSynthesis.speak(dummyUtterance);
+                    const unlockTTS = new SpeechSynthesisUtterance(" ");
+                    unlockTTS.volume = 0;
+                    window.speechSynthesis.speak(unlockTTS);
                 } catch (e) {
                     console.error("Audio Init Error", e);
                 }
@@ -103,7 +127,6 @@
             const playBeep = (freq = 440, duration = 0.1, type = 'sine', volume = 0.3) => {
                 if (isMuted || !audioCtx.current) return;
                 try {
-                    if (audioCtx.current.state === 'suspended') audioCtx.current.resume();
                     const osc = audioCtx.current.createOscillator();
                     const gain = audioCtx.current.createGain();
                     osc.type = type;
@@ -135,10 +158,21 @@
                 try {
                     window.speechSynthesis.cancel();
                     const utterance = new SpeechSynthesisUtterance(text);
+                    
+                    // 한국어 여성 목소리 찾기 (Yuna 혹은 'ko' 포함된 여성 이름 탐색)
                     const isEnglish = /[a-zA-Z]/.test(text);
-                    utterance.lang = isEnglish ? 'en-US' : 'ko-KR';
-                    utterance.pitch = 1.0;
-                    utterance.rate = 1.2; // 약간 빠르게 설정
+                    if (isEnglish) {
+                        utterance.lang = 'en-US';
+                        const femaleVoice = voicesRef.current.find(v => v.lang.includes('en') && (v.name.includes('Samantha') || v.name.includes('Victoria')));
+                        if (femaleVoice) utterance.voice = femaleVoice;
+                    } else {
+                        utterance.lang = 'ko-KR';
+                        const femaleVoice = voicesRef.current.find(v => v.lang.includes('ko') && (v.name.includes('Yuna') || v.name.includes('Google') || v.name.includes('Heami')));
+                        if (femaleVoice) utterance.voice = femaleVoice;
+                    }
+
+                    utterance.pitch = 1.1; // 약간 높게 (젊은 여성 톤)
+                    utterance.rate = 1.0;
                     window.speechSynthesis.speak(utterance);
                 } catch (e) {}
             };
@@ -158,8 +192,9 @@
 
             useEffect(() => {
                 if (status === 'countdown') {
-                    // 첫 숫자를 즉시 읽어줌
-                    speak(countdown.toString());
+                    // 카운트다운은 한국어로 "오, 사, 삼, 이, 일"
+                    const krCounts = ["", "일", "이", "삼", "사", "오"];
+                    speak(krCounts[countdown]);
                     
                     const interval = setInterval(() => {
                         setCountdown(prev => {
@@ -170,7 +205,7 @@
                                 return 0;
                             }
                             const nextCount = prev - 1;
-                            speak(nextCount.toString());
+                            speak(krCounts[nextCount]);
                             return nextCount;
                         });
                     }, 1000);
@@ -317,7 +352,7 @@
                             </div>
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
-                                    <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white shadow-xl active:scale-95 transition-transform">저장</button>
+                                    <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white">저장</button>
                                     <button onClick={async () => { 
                                         await initAudio(); 
                                         setElapsedTime(0); 
@@ -338,49 +373,63 @@
             return (
                 <div className="min-h-screen safe-top safe-bottom p-8 flex flex-col items-center overflow-hidden text-white bg-slate-950">
                     <div className="w-full max-w-md h-full flex flex-col">
-                        <header className="flex justify-between items-start mb-8">
+                        <header className="flex justify-between items-start mb-4">
                             <div className="space-y-2">
                                 <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div><h2 className="text-sm font-bold uppercase text-slate-300">{currentRecipe.name}</h2></div>
                                 <div className="flex gap-4 text-xs font-mono text-slate-400 font-black"><span>{currentRecipe.dose}g</span><span>{currentRecipe.yield}g</span><span>{currentRecipe.temp}°C</span></div>
                             </div>
                             <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="p-3 bg-slate-900 rounded-full text-slate-400"><Icon name="rotate-ccw" size={18} /></button>
                         </header>
+                        
                         <main className="flex-1 flex flex-col justify-center">
                             {status === 'countdown' ? (
-                                <div className="text-center min-h-[300px] flex flex-col justify-center">
+                                <div className="text-center h-[300px] flex flex-col justify-center">
                                     <div className="text-[12rem] font-black text-blue-500 leading-none drop-shadow-[0_0_30px_rgba(59,130,246,0.3)]">{countdown}</div>
                                     <div className="text-xl font-bold tracking-[0.5em] text-slate-600 uppercase mt-4">준비하세요</div>
                                 </div>
                             ) : (
                                 <div className="space-y-12">
-                                    {/* 텍스트 영역 높이를 min-h로 고정하여 압력 변화 시 레이아웃 흔들림 방지 */}
-                                    <div className="text-center min-h-[160px] flex flex-col justify-center">
-                                        <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-4 bg-slate-900/50 py-2 rounded-full border border-white/5">{activeStep?.name}</div>
-                                        <div className="flex items-center justify-center gap-3">
-                                            <div className="text-[8rem] font-black leading-none text-white tracking-tighter">{activeStep?.pressure}</div>
-                                            {activeStep?.pressureEnd && activeStep.pressureEnd !== activeStep.pressure && (
-                                                <div className="flex items-center gap-3"><span className="text-4xl text-slate-600">→</span><span className="text-[8rem] font-black text-white tracking-tighter">{activeStep.pressureEnd}</span></div>
-                                            )}
-                                            <div className="text-2xl font-black text-cyan-500 mt-12 ml-2">BAR</div>
+                                    <div className="text-center">
+                                        <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-6 bg-slate-900/50 py-2 rounded-full border border-white/5">{activeStep?.name}</div>
+                                        
+                                        {/* 압력 표시부 고정 높이 적용 (레이아웃 흔들림 방지) */}
+                                        <div className="pressure-container">
+                                            <div className="flex items-center gap-3">
+                                                <div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-right">{activeStep?.pressure}</div>
+                                                {activeStep?.pressureEnd && activeStep.pressureEnd !== activeStep.pressure ? (
+                                                    <>
+                                                        <Icon name="arrow-right" size={40} className="text-slate-600" />
+                                                        <div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-left">{activeStep.pressureEnd}</div>
+                                                    </>
+                                                ) : (
+                                                    <div className="w-[1.5ch]"></div> // 공간 대칭을 위한 더미
+                                                )}
+                                                <div className="text-2xl font-black text-cyan-500 self-end mb-2 ml-1">BAR</div>
+                                            </div>
                                         </div>
                                     </div>
-                                    <div className="space-y-8">
+
+                                    <div className="space-y-10">
                                         <ProgressGraph recipe={currentRecipe} time={elapsedTime} />
                                         <div className="flex justify-between items-end px-2">
                                             <div className="text-7xl font-mono font-bold text-white tabular-nums">{elapsedTime.toFixed(1)}<span className="text-2xl text-slate-600 ml-1">s</span></div>
-                                            <div className="text-right"><div className="text-[10px] font-black text-slate-500 uppercase mb-1">Remaining</div><div className="text-3xl font-mono text-slate-300 tabular-nums">{(totalDuration - elapsedTime).toFixed(1)}s</div></div>
+                                            <div className="text-right">
+                                                <div className="text-[10px] font-black text-slate-500 uppercase mb-1">Remaining</div>
+                                                <div className="text-3xl font-mono text-slate-300 tabular-nums">{(totalDuration - elapsedTime).toFixed(1)}s</div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             )}
                         </main>
-                        <footer className="mt-12 py-8">
+
+                        <footer className="mt-8 py-8">
                             {status === 'finished' ? (
                                 <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="w-full py-6 bg-blue-600 rounded-[2.5rem] text-2xl font-black text-white shadow-2xl active:scale-95 transition-transform">DONE</button>
                             ) : (
                                 <div className="grid grid-cols-4 gap-2">
                                     {currentRecipe.steps.map((_, i) => (
-                                        <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === activeStepIdx ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]' : i < activeStepIdx ? 'bg-slate-700' : 'bg-slate-900'}`} />
+                                        <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === activeStepIdx ? 'bg-blue-500 shadow-lg shadow-blue-500/50' : i < activeStepIdx ? 'bg-slate-700' : 'bg-slate-900'}`} />
                                     ))}
                                 </div>
                             )}
