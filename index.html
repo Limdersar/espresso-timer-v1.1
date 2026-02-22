@@ -33,8 +33,6 @@
     </style>
 </head>
 <body>
-    <!-- iOS 무음 모드 우회를 위한 히든 오디오 요소 -->
-    <!-- 아주 짧은 무음 wav 파일을 사용하여 오디오 세션을 활성화함 -->
     <audio id="silent-audio" preload="auto" style="display:none;">
         <source src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==" type="audio/wav">
     </audio>
@@ -102,7 +100,9 @@
                     voicesRef.current = window.speechSynthesis.getVoices();
                 };
                 loadVoices();
-                window.speechSynthesis.onvoiceschanged = loadVoices;
+                if (window.speechSynthesis.onvoiceschanged !== undefined) {
+                    window.speechSynthesis.onvoiceschanged = loadVoices;
+                }
             }, []);
 
             const showToast = (msg) => {
@@ -110,32 +110,38 @@
                 setTimeout(() => setToast(null), 3000);
             };
 
-            // [우회 로직] 아이폰 무음모드 해결을 위한 핵심 함수
             const initAudio = async () => {
+                // iOS Safari는 speechSynthesis가 멈춰있을 수 있으므로 resume 호출
+                if (window.speechSynthesis.paused) {
+                    window.speechSynthesis.resume();
+                }
+
+                // 1. 오디오 세션 잠금 해제 (실제 짧은 무음 사운드 재생)
                 try {
-                    // 1. 실제 오디오 태그 재생 (iOS 오디오 세션 잠금 해제 핵심)
                     const silentAudio = document.getElementById('silent-audio');
                     if (silentAudio) {
                         silentAudio.muted = false;
-                        await silentAudio.play().catch(e => console.log("Silent audio trigger failed", e));
+                        silentAudio.play().catch(() => {});
                     }
-                    
-                    // 2. Web Audio Context 활성화
+                } catch (e) {}
+                
+                // 2. Web Audio API 컨텍스트 활성화
+                try {
                     if (!audioCtx.current) {
                         audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
                     }
                     if (audioCtx.current.state === 'suspended') {
-                        await audioCtx.current.resume();
+                        audioCtx.current.resume();
                     }
+                } catch (e) {}
 
-                    // 3. TTS 사전 활성화 (무음 한마디 던지기)
+                // 3. TTS 사전 활성화
+                try {
                     window.speechSynthesis.cancel();
                     const unlockTTS = new SpeechSynthesisUtterance(" ");
                     unlockTTS.volume = 0;
                     window.speechSynthesis.speak(unlockTTS);
-                } catch (e) {
-                    console.error("Audio Bypass Init Error", e);
-                }
+                } catch (e) {}
             };
 
             const playBeep = (freq = 440, duration = 0.1, type = 'sine', volume = 0.3) => {
@@ -170,7 +176,6 @@
             const speak = (text) => {
                 if (isMuted) return;
                 try {
-                    // iOS에서는 cancel()을 너무 자주 호출하면 큐가 꼬일 수 있으나 즉각적인 반응을 위해 유지
                     window.speechSynthesis.cancel();
                     const utterance = new SpeechSynthesisUtterance(text);
                     
@@ -327,7 +332,8 @@
                                     <button onClick={() => setIsMuted(!isMuted)} className="p-3 bg-slate-900 rounded-xl border border-slate-800"><Icon name={isMuted ? "volume-x" : "volume-2"} size={20}/></button>
                                     <button onClick={() => { 
                                         if(recipes.length > 1) { 
-                                            setRecipes(recipes.filter((_, i) => i !== selectedIdx)); 
+                                            const newRecipes = recipes.filter((_, i) => i !== selectedIdx);
+                                            setRecipes(newRecipes); 
                                             setSelectedIdx(0);
                                             setView('list'); 
                                         } 
@@ -377,8 +383,9 @@
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
                                     <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white hover:bg-slate-700 transition-colors">저장</button>
-                                    <button onClick={async () => { 
-                                        await initAudio(); // 여기서 iOS 잠금을 해제함
+                                    <button onClick={() => { 
+                                        // iOS 즉시 반응을 위해 비동기 처리 분리
+                                        initAudio();
                                         setElapsedTime(0); 
                                         setActiveStepIdx(0); 
                                         setCountdown(5); 
