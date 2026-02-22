@@ -45,7 +45,6 @@
         const App = () => {
             const [view, setView] = useState('list');
             const [showImportModal, setShowImportModal] = useState(false);
-            const [importCode, setImportCode] = useState('');
             const [toast, setToast] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
 
@@ -74,7 +73,6 @@
             
             const timerRef = useRef(null);
             const audioCtx = useRef(null);
-            const voicesRef = useRef([]);
 
             const currentRecipe = recipes[selectedIdx];
 
@@ -83,97 +81,50 @@
                 setTimeout(() => setToast(null), 3000);
             };
 
-            // 무음 모드 우회 핵심: 사용자 액션 시 무음 오디오 무한 루프 시작
+            // TTS를 사용한 알림음 생성 (무음 모드 우회)
+            const speak = (text, rate = 1.1) => {
+                if (isMuted) return;
+                try {
+                    window.speechSynthesis.cancel();
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    const isEnglish = /[a-zA-Z]/.test(text);
+                    utterance.lang = isEnglish ? 'en-US' : 'ko-KR';
+                    utterance.pitch = 1.0;
+                    utterance.rate = rate;
+                    window.speechSynthesis.speak(utterance);
+                } catch (e) {}
+            };
+
+            // 비프음 대용 TTS 알림 (무음 모드 대응)
+            const playAlertSound = (type = 'short') => {
+                if (isMuted) return;
+                // "띵" 소리와 유사한 느낌을 주기 위해 짧고 높은 톤의 기호를 읽게 하거나
+                // 아주 짧은 무음 뒤에 메시지를 출력하여 오디오 채널을 활성화합니다.
+                if (type === 'short') {
+                    speak("!", 2.0); // 느낌표는 보통 짧은 멈춤이나 아주 미세한 소리를 유발합니다.
+                } else if (type === 'transition') {
+                    speak("다음", 1.5);
+                } else if (type === 'final') {
+                    speak("추출 완료", 1.0);
+                }
+            };
+
             const initAudio = async () => {
                 try {
-                    // 1. 히든 오디오 재생 (무음 모드 스위치 우회 시도)
                     const silentAudio = document.getElementById('silent-audio');
                     if (silentAudio) {
-                        silentAudio.play().catch(e => console.log("Silent audio play failed", e));
+                        silentAudio.play().catch(() => {});
                     }
-
-                    // 2. Web AudioContext 초기화
                     if (!audioCtx.current) {
                         audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
                     }
                     if (audioCtx.current.state === 'suspended') {
                         await audioCtx.current.resume();
                     }
-
-                    // 3. TTS 권한 획득을 위한 워밍업
-                    window.speechSynthesis.cancel();
-                    const dummyUtterance = new SpeechSynthesisUtterance("");
-                    window.speechSynthesis.speak(dummyUtterance);
-
-                    // 4. 아주 짧은 비프음
-                    const osc = audioCtx.current.createOscillator();
-                    const gain = audioCtx.current.createGain();
-                    osc.connect(gain);
-                    gain.connect(audioCtx.current.destination);
-                    gain.gain.setValueAtTime(0.001, audioCtx.current.currentTime);
-                    osc.start();
-                    osc.stop(audioCtx.current.currentTime + 0.05);
-                } catch (e) {
-                    console.error("Audio Init Error", e);
-                }
-            };
-
-            const playBeep = (freq = 440, duration = 0.1, type = 'sine', volume = 0.3) => {
-                if (isMuted || !audioCtx.current) return;
-                try {
-                    if (audioCtx.current.state === 'suspended') audioCtx.current.resume();
-                    const osc = audioCtx.current.createOscillator();
-                    const gain = audioCtx.current.createGain();
-                    osc.type = type;
-                    osc.connect(gain);
-                    gain.connect(audioCtx.current.destination);
-                    osc.frequency.setValueAtTime(freq, audioCtx.current.currentTime);
-                    gain.gain.setValueAtTime(volume, audioCtx.current.currentTime);
-                    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.current.currentTime + duration);
-                    osc.start();
-                    osc.stop(audioCtx.current.currentTime + duration);
+                    // TTS 워밍업
+                    speak("", 1.0);
                 } catch (e) {}
             };
-
-            const playStepTransition = () => {
-                playBeep(880, 0.15, 'square', 0.2);
-                setTimeout(() => playBeep(880, 0.1, 'square', 0.2), 200);
-            };
-
-            const playFinalBell = () => {
-                let delay = 0;
-                [1, 2, 3].forEach(() => {
-                    setTimeout(() => playBeep(1200, 0.8, 'sine', 0.25), delay);
-                    delay += 800;
-                });
-            };
-
-            const speak = (text) => {
-                if (isMuted) return;
-                try {
-                    window.speechSynthesis.cancel();
-                    const utterance = new SpeechSynthesisUtterance(text);
-                    const isEnglish = /[a-zA-Z]/.test(text);
-                    
-                    if (isEnglish) {
-                        utterance.lang = 'en-US';
-                    } else {
-                        utterance.lang = 'ko-KR';
-                    }
-
-                    utterance.pitch = 1.0;
-                    utterance.rate = 1.1;
-                    window.speechSynthesis.speak(utterance);
-                } catch (e) {}
-            };
-
-            useEffect(() => {
-                const loadVoices = () => {
-                    voicesRef.current = window.speechSynthesis.getVoices();
-                };
-                loadVoices();
-                window.speechSynthesis.onvoiceschanged = loadVoices;
-            }, []);
 
             const totalDuration = useMemo(() => 
                 currentRecipe?.steps.reduce((acc, s) => acc + s.duration, 0) || 0
@@ -194,11 +145,11 @@
                         setCountdown(prev => {
                             if (prev <= 1) {
                                 setStatus('running');
-                                playStepTransition();
+                                playAlertSound('transition');
                                 speak(currentRecipe.steps[0].name);
                                 return 0;
                             }
-                            playBeep(440, 0.05, 'square', 0.1);
+                            playAlertSound('short');
                             return prev - 1;
                         });
                     }, 1000);
@@ -212,15 +163,14 @@
                         
                         if (stepIdx !== activeStepIdx && stepIdx < currentRecipe.steps.length) {
                             setActiveStepIdx(stepIdx);
-                            playStepTransition();
+                            playAlertSound('transition');
                             speak(currentRecipe.steps[stepIdx].name);
                         }
                         
                         if (now >= totalDuration) {
                             setElapsedTime(totalDuration);
                             setStatus('finished');
-                            playFinalBell();
-                            speak("추출 완료");
+                            playAlertSound('final');
                             clearInterval(timerRef.current);
                         } else {
                             setElapsedTime(now);
@@ -229,18 +179,6 @@
                     return () => clearInterval(timerRef.current);
                 }
             }, [status, activeStepIdx, currentRecipe, elapsedTime, totalDuration]);
-
-            const shareRecipe = (recipe) => {
-                const data = { n: recipe.name, d: recipe.dose, y: recipe.yield, t: recipe.temp, s: recipe.steps.map(s => [s.name, s.duration, s.pressure, s.pressureEnd || s.pressure]) };
-                const code = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
-                const tempInput = document.createElement('input');
-                document.body.appendChild(tempInput);
-                tempInput.value = code;
-                tempInput.select();
-                document.execCommand('copy');
-                document.body.removeChild(tempInput);
-                showToast("코드가 복사되었습니다!");
-            };
 
             const ProgressGraph = ({ recipe, time, showIndicator = true }) => {
                 if (!recipe) return null;
@@ -272,16 +210,13 @@
                         <div className="w-full max-w-md">
                             <div className="flex justify-between items-center mb-10">
                                 <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent italic">FLAIR 58</h1>
-                                <div className="flex gap-2">
-                                    <button onClick={() => setShowImportModal(true)} className="p-3 bg-slate-900 rounded-2xl border border-slate-800"><Icon name="download" className="text-blue-400" /></button>
-                                    <button onClick={() => {
-                                        const r = { id: Date.now(), name: 'New Recipe', dose: 18, yield: 36, temp: 93, steps: [{ name: 'Extraction', duration: 30, pressure: 9, pressureEnd: 9 }] };
-                                        setRecipes([...recipes, r]);
-                                        setSelectedIdx(recipes.length);
-                                        setEditedRecipe(r);
-                                        setView('detail');
-                                    }} className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/20 text-white"><Icon name="plus" /></button>
-                                </div>
+                                <button onClick={() => {
+                                    const r = { id: Date.now(), name: 'New Recipe', dose: 18, yield: 36, temp: 93, steps: [{ name: 'Extraction', duration: 30, pressure: 9, pressureEnd: 9 }] };
+                                    setRecipes([...recipes, r]);
+                                    setSelectedIdx(recipes.length);
+                                    setEditedRecipe(r);
+                                    setView('detail');
+                                }} className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/20 text-white"><Icon name="plus" /></button>
                             </div>
                             <div className="space-y-4">
                                 {recipes.map((r, i) => (
@@ -308,7 +243,6 @@
             }
 
             if (view === 'detail') {
-                const ratio = (editedRecipe.yield / editedRecipe.dose).toFixed(1);
                 return (
                     <div className="min-h-screen safe-top safe-bottom px-6 py-8 flex flex-col items-center text-white">
                         <div className="w-full max-w-md pb-40">
@@ -316,23 +250,22 @@
                                 <button onClick={() => setView('list')} className="p-2 text-slate-400"><Icon name="chevron-left" size={32}/></button>
                                 <div className="flex gap-2">
                                     <button onClick={() => setIsMuted(!isMuted)} className="p-3 bg-slate-900 rounded-xl border border-slate-800"><Icon name={isMuted ? "volume-x" : "volume-2"} size={20}/></button>
-                                    <button onClick={() => shareRecipe(editedRecipe)} className="p-3 bg-slate-900 rounded-xl border border-slate-800 text-blue-400"><Icon name="share-2" size={20}/></button>
                                     <button onClick={() => { if(recipes.length > 1) { setRecipes(recipes.filter((_, i) => i !== selectedIdx)); setView('list'); } }} className="p-3 bg-rose-500/10 text-rose-500 rounded-xl"><Icon name="trash-2" size={20}/></button>
                                 </div>
                             </div>
-                            <input className="w-full bg-transparent text-3xl font-black mb-8 focus:outline-none text-white" value={editedRecipe.name} onChange={e => setEditedRecipe({...editedRecipe, name: e.target.value})} />
+                            <input className="w-full bg-transparent text-3xl font-black mb-8 focus:outline-none text-white border-b border-white/10 pb-2" value={editedRecipe.name} onChange={e => setEditedRecipe({...editedRecipe, name: e.target.value})} />
                             <div className="grid grid-cols-3 gap-3 mb-8">
-                                <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800">
+                                <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800 text-center">
                                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Dose</div>
-                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-white" value={editedRecipe.dose} onChange={e => setEditedRecipe({...editedRecipe, dose: Number(e.target.value)})} />
+                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-white text-center" value={editedRecipe.dose} onChange={e => setEditedRecipe({...editedRecipe, dose: Number(e.target.value)})} />
                                 </div>
-                                <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800">
+                                <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800 text-center">
                                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Yield</div>
-                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-blue-400" value={editedRecipe.yield} onChange={e => setEditedRecipe({...editedRecipe, yield: Number(e.target.value)})} />
+                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-blue-400 text-center" value={editedRecipe.yield} onChange={e => setEditedRecipe({...editedRecipe, yield: Number(e.target.value)})} />
                                 </div>
-                                <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800">
+                                <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800 text-center">
                                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Temp</div>
-                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-rose-400" value={editedRecipe.temp} onChange={e => setEditedRecipe({...editedRecipe, temp: Number(e.target.value)})} />
+                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-rose-400 text-center" value={editedRecipe.temp} onChange={e => setEditedRecipe({...editedRecipe, temp: Number(e.target.value)})} />
                                 </div>
                             </div>
                             <div className="mb-8"><ProgressGraph recipe={editedRecipe} time={0} showIndicator={false} /></div>
@@ -340,7 +273,7 @@
                                 {editedRecipe.steps.map((s, idx) => (
                                     <div key={idx} className="bg-slate-900 p-5 rounded-3xl border border-slate-800">
                                         <div className="flex gap-2 mb-4">
-                                            <input className="flex-1 bg-slate-800 rounded-xl px-4 py-3 text-sm font-bold text-white" value={s.name} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].name = e.target.value; setEditedRecipe({...editedRecipe, steps: ns}); }} />
+                                            <input className="flex-1 bg-slate-800 rounded-xl px-4 py-3 text-sm font-bold text-white focus:ring-1 ring-blue-500" value={s.name} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].name = e.target.value; setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                             <div className="flex items-center gap-2 bg-slate-800 px-3 rounded-xl">
                                                 <input type="number" className="w-8 bg-transparent text-center font-mono text-blue-400 font-bold" value={s.duration} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].duration = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                                 <span className="text-[10px] text-slate-500 font-bold">S</span>
@@ -358,11 +291,11 @@
                                         </div>
                                     </div>
                                 ))}
-                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold">+ 단계 추가</button>
+                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'New Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold">+ 단계 추가</button>
                             </div>
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
-                                    <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white">저장</button>
+                                    <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white shadow-xl active:scale-95 transition-transform">저장</button>
                                     <button onClick={async () => { 
                                         await initAudio(); 
                                         setElapsedTime(0); 
@@ -370,7 +303,7 @@
                                         setCountdown(5); 
                                         setStatus('countdown'); 
                                         setView('active'); 
-                                    }} className="flex-[2] py-5 bg-blue-600 rounded-[2rem] font-black text-xl text-white">추출 시작</button>
+                                    }} className="flex-[2] py-5 bg-blue-600 rounded-[2rem] font-black text-xl text-white shadow-2xl active:scale-95 transition-transform">추출 시작</button>
                                 </div>
                             </div>
                         </div>
@@ -381,29 +314,29 @@
             const activeStep = currentRecipe.steps[activeStepIdx];
 
             return (
-                <div className="min-h-screen safe-top safe-bottom p-8 flex flex-col items-center overflow-hidden text-white">
+                <div className="min-h-screen safe-top safe-bottom p-8 flex flex-col items-center overflow-hidden text-white bg-slate-950">
                     <div className="w-full max-w-md h-full flex flex-col">
                         <header className="flex justify-between items-start mb-8">
                             <div className="space-y-2">
                                 <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div><h2 className="text-sm font-bold uppercase text-slate-300">{currentRecipe.name}</h2></div>
                                 <div className="flex gap-4 text-xs font-mono text-slate-400 font-black"><span>{currentRecipe.dose}g</span><span>{currentRecipe.yield}g</span><span>{currentRecipe.temp}°C</span></div>
                             </div>
-                            <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="p-2 text-slate-600"><Icon name="rotate-ccw" /></button>
+                            <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="p-3 bg-slate-900 rounded-full text-slate-400"><Icon name="rotate-ccw" size={18} /></button>
                         </header>
                         <main className="flex-1 flex flex-col justify-center">
                             {status === 'countdown' ? (
                                 <div className="text-center">
-                                    <div className="text-[12rem] font-black text-blue-500 leading-none">{countdown}</div>
-                                    <div className="text-xl font-bold tracking-[0.5em] text-slate-600 uppercase">Ready</div>
+                                    <div className="text-[12rem] font-black text-blue-500 leading-none drop-shadow-[0_0_30px_rgba(59,130,246,0.3)]">{countdown}</div>
+                                    <div className="text-xl font-bold tracking-[0.5em] text-slate-600 uppercase mt-4">Get Ready</div>
                                 </div>
                             ) : (
                                 <div className="space-y-12">
                                     <div className="text-center">
-                                        <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-2">{activeStep?.name}</div>
+                                        <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-4 bg-slate-900/50 py-2 rounded-full border border-white/5">{activeStep?.name}</div>
                                         <div className="flex items-center justify-center gap-3">
-                                            <div className="text-[8rem] font-black leading-none text-white">{activeStep?.pressure}</div>
+                                            <div className="text-[8rem] font-black leading-none text-white tracking-tighter">{activeStep?.pressure}</div>
                                             {activeStep?.pressureEnd && activeStep.pressureEnd !== activeStep.pressure && (
-                                                <div className="flex items-center gap-3"><span className="text-4xl text-slate-600">→</span><span className="text-[8rem] font-black text-white">{activeStep.pressureEnd}</span></div>
+                                                <div className="flex items-center gap-3"><span className="text-4xl text-slate-600">→</span><span className="text-[8rem] font-black text-white tracking-tighter">{activeStep.pressureEnd}</span></div>
                                             )}
                                             <div className="text-2xl font-black text-cyan-500 mt-12 ml-2">BAR</div>
                                         </div>
@@ -411,8 +344,8 @@
                                     <div className="space-y-8">
                                         <ProgressGraph recipe={currentRecipe} time={elapsedTime} />
                                         <div className="flex justify-between items-end px-2">
-                                            <div className="text-7xl font-mono font-bold text-white">{elapsedTime.toFixed(1)}<span className="text-2xl text-slate-600 ml-1">s</span></div>
-                                            <div className="text-right"><div className="text-[10px] font-black text-slate-500 uppercase mb-1">Remaining</div><div className="text-3xl font-mono text-slate-300">{(totalDuration - elapsedTime).toFixed(1)}s</div></div>
+                                            <div className="text-7xl font-mono font-bold text-white tabular-nums">{elapsedTime.toFixed(1)}<span className="text-2xl text-slate-600 ml-1">s</span></div>
+                                            <div className="text-right"><div className="text-[10px] font-black text-slate-500 uppercase mb-1">Remaining</div><div className="text-3xl font-mono text-slate-300 tabular-nums">{(totalDuration - elapsedTime).toFixed(1)}s</div></div>
                                         </div>
                                     </div>
                                 </div>
@@ -420,9 +353,13 @@
                         </main>
                         <footer className="mt-12 py-8">
                             {status === 'finished' ? (
-                                <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="w-full py-6 bg-slate-900 border border-blue-900/30 rounded-[2.5rem] text-2xl font-black text-blue-400">DONE</button>
+                                <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="w-full py-6 bg-blue-600 rounded-[2.5rem] text-2xl font-black text-white shadow-2xl active:scale-95 transition-transform">추출 완료 - 돌아가기</button>
                             ) : (
-                                <div className="grid grid-cols-4 gap-2">{currentRecipe.steps.map((_, i) => (<div key={i} className={`h-1.5 rounded-full ${i === activeStepIdx ? 'bg-blue-500' : i < activeStepIdx ? 'bg-slate-700' : 'bg-slate-900'}`} />))}</div>
+                                <div className="grid grid-cols-4 gap-2">
+                                    {currentRecipe.steps.map((_, i) => (
+                                        <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === activeStepIdx ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]' : i < activeStepIdx ? 'bg-slate-700' : 'bg-slate-900'}`} />
+                                    ))}
+                                </div>
                             )}
                         </footer>
                     </div>
