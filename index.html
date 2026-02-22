@@ -85,7 +85,6 @@
             const [toast, setToast] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
 
-            // --- Data State ---
             const [recipes, setRecipes] = useState([
                 {
                     id: 1,
@@ -104,7 +103,6 @@
             const [selectedIdx, setSelectedIdx] = useState(0);
             const [editedRecipe, setEditedRecipe] = useState(null);
 
-            // --- Timer State ---
             const [status, setStatus] = useState('idle');
             const [countdown, setCountdown] = useState(5);
             const [elapsedTime, setElapsedTime] = useState(0);
@@ -120,25 +118,31 @@
                 setTimeout(() => setToast(null), 3000);
             };
 
-            // iOS FIX: Initialize and Resume AudioContext on User Action
+            // iOS FIX: 사용자의 클릭 이벤트 내에서 호출되어야 함
             const initAudio = async () => {
                 try {
+                    // 1. AudioContext 초기화
                     if (!audioCtx.current) {
                         audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
                     }
                     if (audioCtx.current.state === 'suspended') {
                         await audioCtx.current.resume();
                     }
-                    // Silent sound to "wake up" audio engine on iOS
-                    const buffer = audioCtx.current.createBuffer(1, 1, 22050);
-                    const source = audioCtx.current.createBufferSource();
-                    source.buffer = buffer;
-                    source.connect(audioCtx.current.destination);
-                    source.start(0);
+                    
+                    // 2. 아주 짧은 비프음 재생 (iOS 오디오 잠금 해제용)
+                    const osc = audioCtx.current.createOscillator();
+                    const gain = audioCtx.current.createGain();
+                    osc.connect(gain);
+                    gain.connect(audioCtx.current.destination);
+                    gain.gain.setValueAtTime(0.001, audioCtx.current.currentTime);
+                    osc.start();
+                    osc.stop(audioCtx.current.currentTime + 0.01);
 
-                    // Pre-warm TTS
-                    const utterance = new SpeechSynthesisUtterance("");
-                    window.speechSynthesis.speak(utterance);
+                    // 3. TTS 워밍업 (빈 음성을 한 번 재생하여 이후의 자동 speak 허용)
+                    window.speechSynthesis.cancel();
+                    const dummyUtterance = new SpeechSynthesisUtterance("");
+                    window.speechSynthesis.speak(dummyUtterance);
+                    
                 } catch (e) {
                     console.error("Audio Init Error", e);
                 }
@@ -153,7 +157,7 @@
                     osc.type = type;
                     osc.connect(gain);
                     gain.connect(audioCtx.current.destination);
-                    osc.frequency.value = freq;
+                    osc.frequency.setValueAtTime(freq, audioCtx.current.currentTime);
                     gain.gain.setValueAtTime(volume, audioCtx.current.currentTime);
                     gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.current.currentTime + duration);
                     osc.start();
@@ -177,31 +181,32 @@
             const speak = (text) => {
                 if (isMuted) return;
                 
-                const utterance = new SpeechSynthesisUtterance(text);
-                const voices = voicesRef.current;
-                const isEnglish = /[a-zA-Z]/.test(text);
-                
-                if (isEnglish) {
-                    // Try to find natural female English voice (iOS usually has Samantha or Karen)
-                    const enVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Samantha') || v.name.includes('Karen') || v.name.includes('Female'))) ||
-                                    voices.find(v => v.lang.startsWith('en'));
-                    if (enVoice) utterance.voice = enVoice;
-                    utterance.lang = 'en-US';
-                } else {
-                    // Try to find natural female Korean voice (iOS usually has Yuna)
-                    const koVoice = voices.find(v => v.lang.startsWith('ko') && (v.name.includes('Yuna') || v.name.includes('Sora'))) ||
-                                    voices.find(v => v.lang.startsWith('ko'));
-                    if (koVoice) utterance.voice = koVoice;
-                    utterance.lang = 'ko-KR';
-                }
+                try {
+                    window.speechSynthesis.cancel(); // 큐 초기화
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    const voices = voicesRef.current;
+                    const isEnglish = /[a-zA-Z]/.test(text);
+                    
+                    if (isEnglish) {
+                        const enVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Samantha') || v.name.includes('Karen'))) ||
+                                        voices.find(v => v.lang.startsWith('en'));
+                        if (enVoice) utterance.voice = enVoice;
+                        utterance.lang = 'en-US';
+                    } else {
+                        const koVoice = voices.find(v => v.lang.startsWith('ko') && (v.name.includes('Yuna') || v.name.includes('Sora'))) ||
+                                        voices.find(v => v.lang.startsWith('ko'));
+                        if (koVoice) utterance.voice = koVoice;
+                        utterance.lang = 'ko-KR';
+                    }
 
-                utterance.pitch = 1.1;
-                utterance.rate = 1.0;
-                window.speechSynthesis.cancel(); // Clear queue for immediate instruction
-                window.speechSynthesis.speak(utterance);
+                    utterance.pitch = 1.05;
+                    utterance.rate = 1.1; // 약간 빠르게
+                    window.speechSynthesis.speak(utterance);
+                } catch (e) {
+                    console.error("Speak error", e);
+                }
             };
 
-            // Voice Loading for iOS
             useEffect(() => {
                 const loadVoices = () => {
                     const availableVoices = window.speechSynthesis.getVoices();
@@ -210,7 +215,9 @@
                     }
                 };
                 loadVoices();
-                window.speechSynthesis.onvoiceschanged = loadVoices;
+                if (typeof window.speechSynthesis !== 'undefined' && window.speechSynthesis.onvoiceschanged !== undefined) {
+                    window.speechSynthesis.onvoiceschanged = loadVoices;
+                }
             }, []);
 
             const totalDuration = useMemo(() => 
@@ -247,11 +254,13 @@
                     timerRef.current = setInterval(() => {
                         const now = (Date.now() - start) / 1000;
                         const stepIdx = getStepAtTime(now);
+                        
                         if (stepIdx !== activeStepIdx && stepIdx < currentRecipe.steps.length) {
                             setActiveStepIdx(stepIdx);
                             playStepTransition();
                             speak(currentRecipe.steps[stepIdx].name);
                         }
+                        
                         if (now >= totalDuration) {
                             setElapsedTime(totalDuration);
                             setStatus('finished');
@@ -264,14 +273,11 @@
                     }, 50);
                     return () => clearInterval(timerRef.current);
                 }
-            }, [status, activeStepIdx, currentRecipe]);
+            }, [status, activeStepIdx, currentRecipe, elapsedTime, totalDuration]);
 
             const shareRecipe = (recipe) => {
                 const data = { 
-                    n: recipe.name, 
-                    d: recipe.dose, 
-                    y: recipe.yield, 
-                    t: recipe.temp, 
+                    n: recipe.name, d: recipe.dose, y: recipe.yield, t: recipe.temp, 
                     s: recipe.steps.map(s => [s.name, s.duration, s.pressure, s.pressureEnd || s.pressure]) 
                 };
                 const code = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
@@ -288,17 +294,8 @@
                 try {
                     const decoded = JSON.parse(decodeURIComponent(escape(atob(importCode))));
                     const newR = { 
-                        id: Date.now(), 
-                        name: decoded.n + " (Import)", 
-                        dose: decoded.d, 
-                        yield: decoded.y, 
-                        temp: decoded.t, 
-                        steps: decoded.s.map(s => ({ 
-                            name: s[0], 
-                            duration: s[1], 
-                            pressure: s[2],
-                            pressureEnd: s[3] || s[2]
-                        })) 
+                        id: Date.now(), name: decoded.n + " (Import)", dose: decoded.d, yield: decoded.y, temp: decoded.t, 
+                        steps: decoded.s.map(s => ({ name: s[0], duration: s[1], pressure: s[2], pressureEnd: s[3] || s[2] })) 
                     };
                     setRecipes([...recipes, newR]);
                     setShowImportModal(false);
@@ -466,7 +463,14 @@
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
                                     <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-lg text-white">저장</button>
-                                    <button onClick={async () => { await initAudio(); setElapsedTime(0); setActiveStepIdx(0); setCountdown(5); setStatus('countdown'); setView('active'); }} className="flex-[2] py-5 bg-blue-600 rounded-[2rem] font-black text-xl shadow-2xl shadow-blue-900/40 text-white">추출 시작</button>
+                                    <button onClick={async () => { 
+                                        await initAudio(); // 반드시 클릭 핸들러 최상단에서 호출
+                                        setElapsedTime(0); 
+                                        setActiveStepIdx(0); 
+                                        setCountdown(5); 
+                                        setStatus('countdown'); 
+                                        setView('active'); 
+                                    }} className="flex-[2] py-5 bg-blue-600 rounded-[2rem] font-black text-xl shadow-2xl shadow-blue-900/40 text-white">추출 시작</button>
                                 </div>
                             </div>
                         </div>
@@ -475,7 +479,6 @@
                 );
             }
 
-            // 3. Active Timer View
             const activeStep = currentRecipe.steps[activeStepIdx];
             const isPressureRange = activeStep && activeStep.pressureEnd !== undefined && activeStep.pressure !== activeStep.pressureEnd;
 
