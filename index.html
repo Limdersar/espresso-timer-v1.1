@@ -44,7 +44,6 @@
 
         const App = () => {
             const [view, setView] = useState('list');
-            const [showImportModal, setShowImportModal] = useState(false);
             const [toast, setToast] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
 
@@ -81,39 +80,11 @@
                 setTimeout(() => setToast(null), 3000);
             };
 
-            // TTS를 사용한 알림음 생성 (무음 모드 우회)
-            const speak = (text, rate = 1.1) => {
-                if (isMuted) return;
-                try {
-                    window.speechSynthesis.cancel();
-                    const utterance = new SpeechSynthesisUtterance(text);
-                    const isEnglish = /[a-zA-Z]/.test(text);
-                    utterance.lang = isEnglish ? 'en-US' : 'ko-KR';
-                    utterance.pitch = 1.0;
-                    utterance.rate = rate;
-                    window.speechSynthesis.speak(utterance);
-                } catch (e) {}
-            };
-
-            // 비프음 대용 TTS 알림 (무음 모드 대응)
-            const playAlertSound = (type = 'short') => {
-                if (isMuted) return;
-                // "띵" 소리와 유사한 느낌을 주기 위해 짧고 높은 톤의 기호를 읽게 하거나
-                // 아주 짧은 무음 뒤에 메시지를 출력하여 오디오 채널을 활성화합니다.
-                if (type === 'short') {
-                    speak("!", 2.0); // 느낌표는 보통 짧은 멈춤이나 아주 미세한 소리를 유발합니다.
-                } else if (type === 'transition') {
-                    speak("다음", 1.5);
-                } else if (type === 'final') {
-                    speak("추출 완료", 1.0);
-                }
-            };
-
             const initAudio = async () => {
                 try {
                     const silentAudio = document.getElementById('silent-audio');
                     if (silentAudio) {
-                        silentAudio.play().catch(() => {});
+                        silentAudio.play().catch(e => console.log("Silent audio play failed", e));
                     }
                     if (!audioCtx.current) {
                         audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
@@ -121,8 +92,54 @@
                     if (audioCtx.current.state === 'suspended') {
                         await audioCtx.current.resume();
                     }
-                    // TTS 워밍업
-                    speak("", 1.0);
+                    window.speechSynthesis.cancel();
+                    const dummyUtterance = new SpeechSynthesisUtterance("");
+                    window.speechSynthesis.speak(dummyUtterance);
+                } catch (e) {
+                    console.error("Audio Init Error", e);
+                }
+            };
+
+            const playBeep = (freq = 440, duration = 0.1, type = 'sine', volume = 0.3) => {
+                if (isMuted || !audioCtx.current) return;
+                try {
+                    if (audioCtx.current.state === 'suspended') audioCtx.current.resume();
+                    const osc = audioCtx.current.createOscillator();
+                    const gain = audioCtx.current.createGain();
+                    osc.type = type;
+                    osc.connect(gain);
+                    gain.connect(audioCtx.current.destination);
+                    osc.frequency.setValueAtTime(freq, audioCtx.current.currentTime);
+                    gain.gain.setValueAtTime(volume, audioCtx.current.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.current.currentTime + duration);
+                    osc.start();
+                    osc.stop(audioCtx.current.currentTime + duration);
+                } catch (e) {}
+            };
+
+            const playStepTransition = () => {
+                playBeep(880, 0.15, 'square', 0.2);
+                setTimeout(() => playBeep(880, 0.1, 'square', 0.2), 200);
+            };
+
+            const playFinalBell = () => {
+                let delay = 0;
+                [1, 2, 3].forEach(() => {
+                    setTimeout(() => playBeep(1200, 0.8, 'sine', 0.25), delay);
+                    delay += 800;
+                });
+            };
+
+            const speak = (text) => {
+                if (isMuted) return;
+                try {
+                    window.speechSynthesis.cancel();
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    const isEnglish = /[a-zA-Z]/.test(text);
+                    utterance.lang = isEnglish ? 'en-US' : 'ko-KR';
+                    utterance.pitch = 1.0;
+                    utterance.rate = 1.2; // 약간 빠르게 설정
+                    window.speechSynthesis.speak(utterance);
                 } catch (e) {}
             };
 
@@ -141,16 +158,20 @@
 
             useEffect(() => {
                 if (status === 'countdown') {
+                    // 첫 숫자를 즉시 읽어줌
+                    speak(countdown.toString());
+                    
                     const interval = setInterval(() => {
                         setCountdown(prev => {
                             if (prev <= 1) {
                                 setStatus('running');
-                                playAlertSound('transition');
+                                playStepTransition();
                                 speak(currentRecipe.steps[0].name);
                                 return 0;
                             }
-                            playAlertSound('short');
-                            return prev - 1;
+                            const nextCount = prev - 1;
+                            speak(nextCount.toString());
+                            return nextCount;
                         });
                     }, 1000);
                     return () => clearInterval(interval);
@@ -163,14 +184,15 @@
                         
                         if (stepIdx !== activeStepIdx && stepIdx < currentRecipe.steps.length) {
                             setActiveStepIdx(stepIdx);
-                            playAlertSound('transition');
+                            playStepTransition();
                             speak(currentRecipe.steps[stepIdx].name);
                         }
                         
                         if (now >= totalDuration) {
                             setElapsedTime(totalDuration);
                             setStatus('finished');
-                            playAlertSound('final');
+                            playFinalBell();
+                            speak("추출 완료");
                             clearInterval(timerRef.current);
                         } else {
                             setElapsedTime(now);
@@ -291,7 +313,7 @@
                                         </div>
                                     </div>
                                 ))}
-                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'New Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold">+ 단계 추가</button>
+                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold">+ 단계 추가</button>
                             </div>
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
@@ -325,13 +347,14 @@
                         </header>
                         <main className="flex-1 flex flex-col justify-center">
                             {status === 'countdown' ? (
-                                <div className="text-center">
+                                <div className="text-center min-h-[300px] flex flex-col justify-center">
                                     <div className="text-[12rem] font-black text-blue-500 leading-none drop-shadow-[0_0_30px_rgba(59,130,246,0.3)]">{countdown}</div>
-                                    <div className="text-xl font-bold tracking-[0.5em] text-slate-600 uppercase mt-4">Get Ready</div>
+                                    <div className="text-xl font-bold tracking-[0.5em] text-slate-600 uppercase mt-4">준비하세요</div>
                                 </div>
                             ) : (
                                 <div className="space-y-12">
-                                    <div className="text-center">
+                                    {/* 텍스트 영역 높이를 min-h로 고정하여 압력 변화 시 레이아웃 흔들림 방지 */}
+                                    <div className="text-center min-h-[160px] flex flex-col justify-center">
                                         <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-4 bg-slate-900/50 py-2 rounded-full border border-white/5">{activeStep?.name}</div>
                                         <div className="flex items-center justify-center gap-3">
                                             <div className="text-[8rem] font-black leading-none text-white tracking-tighter">{activeStep?.pressure}</div>
@@ -353,7 +376,7 @@
                         </main>
                         <footer className="mt-12 py-8">
                             {status === 'finished' ? (
-                                <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="w-full py-6 bg-blue-600 rounded-[2.5rem] text-2xl font-black text-white shadow-2xl active:scale-95 transition-transform">추출 완료 - 돌아가기</button>
+                                <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="w-full py-6 bg-blue-600 rounded-[2.5rem] text-2xl font-black text-white shadow-2xl active:scale-95 transition-transform">DONE</button>
                             ) : (
                                 <div className="grid grid-cols-4 gap-2">
                                     {currentRecipe.steps.map((_, i) => (
