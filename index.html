@@ -24,7 +24,6 @@
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; height: 20px; width: 20px; background: #3b82f6; border-radius: 50%; margin-top: -7px; border: 2px solid #020617; }
         input { color: white !important; }
         
-        /* 레이아웃 고정을 위한 스타일 */
         .pressure-container {
             height: 180px;
             display: flex;
@@ -35,7 +34,8 @@
 </head>
 <body>
     <!-- iOS 무음 모드 우회를 위한 히든 오디오 요소 -->
-    <audio id="silent-audio" loop preload="auto" style="display:none;">
+    <!-- 아주 짧은 무음 wav 파일을 사용하여 오디오 세션을 활성화함 -->
+    <audio id="silent-audio" preload="auto" style="display:none;">
         <source src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==" type="audio/wav">
     </audio>
     <div id="root"></div>
@@ -43,7 +43,6 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
 
-        // [오류 수정] React 렌더링 트리와 Lucide 스크립트 충돌 방지를 위해 span으로 감싸기
         const Icon = ({ name, size = 24, className = "" }) => {
             const spanRef = useRef(null);
             
@@ -96,7 +95,6 @@
             const audioCtx = useRef(null);
             const voicesRef = useRef([]);
 
-            // 현재 레시피 안전하게 가져오기 (삭제 시 인덱스 에러 방지)
             const currentRecipe = recipes[selectedIdx] || recipes[0];
 
             useEffect(() => {
@@ -112,13 +110,17 @@
                 setTimeout(() => setToast(null), 3000);
             };
 
+            // [우회 로직] 아이폰 무음모드 해결을 위한 핵심 함수
             const initAudio = async () => {
                 try {
+                    // 1. 실제 오디오 태그 재생 (iOS 오디오 세션 잠금 해제 핵심)
                     const silentAudio = document.getElementById('silent-audio');
                     if (silentAudio) {
-                        silentAudio.play().catch(e => console.log("Silent audio failed", e));
+                        silentAudio.muted = false;
+                        await silentAudio.play().catch(e => console.log("Silent audio trigger failed", e));
                     }
                     
+                    // 2. Web Audio Context 활성화
                     if (!audioCtx.current) {
                         audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
                     }
@@ -126,12 +128,13 @@
                         await audioCtx.current.resume();
                     }
 
+                    // 3. TTS 사전 활성화 (무음 한마디 던지기)
                     window.speechSynthesis.cancel();
                     const unlockTTS = new SpeechSynthesisUtterance(" ");
                     unlockTTS.volume = 0;
                     window.speechSynthesis.speak(unlockTTS);
                 } catch (e) {
-                    console.error("Audio Init Error", e);
+                    console.error("Audio Bypass Init Error", e);
                 }
             };
 
@@ -167,6 +170,7 @@
             const speak = (text) => {
                 if (isMuted) return;
                 try {
+                    // iOS에서는 cancel()을 너무 자주 호출하면 큐가 꼬일 수 있으나 즉각적인 반응을 위해 유지
                     window.speechSynthesis.cancel();
                     const utterance = new SpeechSynthesisUtterance(text);
                     
@@ -178,28 +182,14 @@
                     } else {
                         utterance.lang = 'ko-KR';
                         const koVoices = voicesRef.current.filter(v => v.lang.includes('ko'));
-                        
-                        // [수정됨] Yuna를 배제하고 젊은 여성 목소리(Sora, Jiyeon, SunHi) 우선 탐색
-                        let targetVoice = koVoices.find(v => 
-                            v.name.includes('Sora') || 
-                            v.name.includes('Jiyeon') || 
-                            v.name.includes('SunHi')
-                        );
-                        
-                        // 선호 목소리가 없으면 Yuna, Heami를 제외한 다른 목소리 사용
+                        let targetVoice = koVoices.find(v => v.name.includes('Sora') || v.name.includes('Jiyeon') || v.name.includes('SunHi'));
                         if (!targetVoice) {
                             targetVoice = koVoices.find(v => !v.name.toLowerCase().includes('yuna') && !v.name.includes('유나') && !v.name.toLowerCase().includes('heami'));
                         }
-                        
-                        // 그래도 없으면 (안드로이드 등) 사용 가능한 첫 번째 목소리
-                        if (!targetVoice && koVoices.length > 0) {
-                            targetVoice = koVoices[0];
-                        }
-
+                        if (!targetVoice && koVoices.length > 0) targetVoice = koVoices[0];
                         if (targetVoice) utterance.voice = targetVoice;
                     }
 
-                    // [수정됨] 피치를 올려 젊은 톤 연출, 말하기 속도 약간 증가
                     utterance.pitch = 1.25; 
                     utterance.rate = 1.05;
                     window.speechSynthesis.speak(utterance);
@@ -338,7 +328,7 @@
                                     <button onClick={() => { 
                                         if(recipes.length > 1) { 
                                             setRecipes(recipes.filter((_, i) => i !== selectedIdx)); 
-                                            setSelectedIdx(0); // [수정됨] 레시피 삭제 시 인덱스 초기화 방어 코드
+                                            setSelectedIdx(0);
                                             setView('list'); 
                                         } 
                                     }} className="p-3 bg-rose-500/10 text-rose-500 rounded-xl"><Icon name="trash-2" size={20}/></button>
@@ -388,7 +378,7 @@
                                 <div className="max-w-md mx-auto flex gap-3">
                                     <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white hover:bg-slate-700 transition-colors">저장</button>
                                     <button onClick={async () => { 
-                                        await initAudio(); 
+                                        await initAudio(); // 여기서 iOS 잠금을 해제함
                                         setElapsedTime(0); 
                                         setActiveStepIdx(0); 
                                         setCountdown(5); 
