@@ -26,7 +26,7 @@
         
         /* 레이아웃 고정을 위한 스타일 */
         .pressure-container {
-            height: 180px; /* 고정 높이 확보 */
+            height: 180px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -43,11 +43,25 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
 
+        // [오류 수정] React 렌더링 트리와 Lucide 스크립트 충돌 방지를 위해 span으로 감싸기
         const Icon = ({ name, size = 24, className = "" }) => {
+            const spanRef = useRef(null);
+            
             useEffect(() => {
-                if (window.lucide) window.lucide.createIcons({ attrs: { class: className, 'stroke-width': 2, width: size, height: size }, name: name });
-            }, [name, size, className]);
-            return <i data-lucide={name} className={className}></i>;
+                if (spanRef.current && window.lucide) {
+                    spanRef.current.innerHTML = `<i data-lucide="${name}"></i>`;
+                    window.lucide.createIcons({
+                        root: spanRef.current,
+                        attrs: {
+                            width: size,
+                            height: size,
+                            'stroke-width': 2
+                        }
+                    });
+                }
+            }, [name, size]);
+            
+            return <span ref={spanRef} className={`inline-flex items-center justify-center ${className}`}></span>;
         };
 
         const App = () => {
@@ -82,9 +96,9 @@
             const audioCtx = useRef(null);
             const voicesRef = useRef([]);
 
-            const currentRecipe = recipes[selectedIdx];
+            // 현재 레시피 안전하게 가져오기 (삭제 시 인덱스 에러 방지)
+            const currentRecipe = recipes[selectedIdx] || recipes[0];
 
-            // 목소리 로드
             useEffect(() => {
                 const loadVoices = () => {
                     voicesRef.current = window.speechSynthesis.getVoices();
@@ -100,13 +114,11 @@
 
             const initAudio = async () => {
                 try {
-                    // iOS 무음 우회용 오디오 재생
                     const silentAudio = document.getElementById('silent-audio');
                     if (silentAudio) {
                         silentAudio.play().catch(e => console.log("Silent audio failed", e));
                     }
                     
-                    // Web Audio Context 활성화
                     if (!audioCtx.current) {
                         audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
                     }
@@ -114,7 +126,6 @@
                         await audioCtx.current.resume();
                     }
 
-                    // iOS TTS 잠금 해제: 사용자 인터랙션 내에서 빈 발화 실행
                     window.speechSynthesis.cancel();
                     const unlockTTS = new SpeechSynthesisUtterance(" ");
                     unlockTTS.volume = 0;
@@ -159,7 +170,6 @@
                     window.speechSynthesis.cancel();
                     const utterance = new SpeechSynthesisUtterance(text);
                     
-                    // 한국어 여성 목소리 찾기 (Yuna 혹은 'ko' 포함된 여성 이름 탐색)
                     const isEnglish = /[a-zA-Z]/.test(text);
                     if (isEnglish) {
                         utterance.lang = 'en-US';
@@ -167,12 +177,31 @@
                         if (femaleVoice) utterance.voice = femaleVoice;
                     } else {
                         utterance.lang = 'ko-KR';
-                        const femaleVoice = voicesRef.current.find(v => v.lang.includes('ko') && (v.name.includes('Yuna') || v.name.includes('Google') || v.name.includes('Heami')));
-                        if (femaleVoice) utterance.voice = femaleVoice;
+                        const koVoices = voicesRef.current.filter(v => v.lang.includes('ko'));
+                        
+                        // [수정됨] Yuna를 배제하고 젊은 여성 목소리(Sora, Jiyeon, SunHi) 우선 탐색
+                        let targetVoice = koVoices.find(v => 
+                            v.name.includes('Sora') || 
+                            v.name.includes('Jiyeon') || 
+                            v.name.includes('SunHi')
+                        );
+                        
+                        // 선호 목소리가 없으면 Yuna, Heami를 제외한 다른 목소리 사용
+                        if (!targetVoice) {
+                            targetVoice = koVoices.find(v => !v.name.toLowerCase().includes('yuna') && !v.name.includes('유나') && !v.name.toLowerCase().includes('heami'));
+                        }
+                        
+                        // 그래도 없으면 (안드로이드 등) 사용 가능한 첫 번째 목소리
+                        if (!targetVoice && koVoices.length > 0) {
+                            targetVoice = koVoices[0];
+                        }
+
+                        if (targetVoice) utterance.voice = targetVoice;
                     }
 
-                    utterance.pitch = 1.1; // 약간 높게 (젊은 여성 톤)
-                    utterance.rate = 1.0;
+                    // [수정됨] 피치를 올려 젊은 톤 연출, 말하기 속도 약간 증가
+                    utterance.pitch = 1.25; 
+                    utterance.rate = 1.05;
                     window.speechSynthesis.speak(utterance);
                 } catch (e) {}
             };
@@ -192,7 +221,6 @@
 
             useEffect(() => {
                 if (status === 'countdown') {
-                    // 카운트다운은 한국어로 "오, 사, 삼, 이, 일"
                     const krCounts = ["", "일", "이", "삼", "사", "오"];
                     speak(krCounts[countdown]);
                     
@@ -238,7 +266,7 @@
             }, [status, activeStepIdx, currentRecipe, elapsedTime, totalDuration]);
 
             const ProgressGraph = ({ recipe, time, showIndicator = true }) => {
-                if (!recipe) return null;
+                if (!recipe || !recipe.steps || recipe.steps.length === 0) return null;
                 const recipeTotal = recipe.steps.reduce((acc, s) => acc + s.duration, 0);
                 let currentX = 20;
                 const points = [];
@@ -277,7 +305,7 @@
                             </div>
                             <div className="space-y-4">
                                 {recipes.map((r, i) => (
-                                    <div key={r.id} onClick={() => { setSelectedIdx(i); setEditedRecipe({...r}); setView('detail'); }} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 active:scale-95 transition-transform">
+                                    <div key={r.id} onClick={() => { setSelectedIdx(i); setEditedRecipe({...r}); setView('detail'); }} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 active:scale-95 transition-transform cursor-pointer">
                                         <div className="flex justify-between items-start mb-4">
                                             <div>
                                                 <h2 className="text-xl font-bold mb-2 text-white">{r.name}</h2>
@@ -307,22 +335,28 @@
                                 <button onClick={() => setView('list')} className="p-2 text-slate-400"><Icon name="chevron-left" size={32}/></button>
                                 <div className="flex gap-2">
                                     <button onClick={() => setIsMuted(!isMuted)} className="p-3 bg-slate-900 rounded-xl border border-slate-800"><Icon name={isMuted ? "volume-x" : "volume-2"} size={20}/></button>
-                                    <button onClick={() => { if(recipes.length > 1) { setRecipes(recipes.filter((_, i) => i !== selectedIdx)); setView('list'); } }} className="p-3 bg-rose-500/10 text-rose-500 rounded-xl"><Icon name="trash-2" size={20}/></button>
+                                    <button onClick={() => { 
+                                        if(recipes.length > 1) { 
+                                            setRecipes(recipes.filter((_, i) => i !== selectedIdx)); 
+                                            setSelectedIdx(0); // [수정됨] 레시피 삭제 시 인덱스 초기화 방어 코드
+                                            setView('list'); 
+                                        } 
+                                    }} className="p-3 bg-rose-500/10 text-rose-500 rounded-xl"><Icon name="trash-2" size={20}/></button>
                                 </div>
                             </div>
                             <input className="w-full bg-transparent text-3xl font-black mb-8 focus:outline-none text-white border-b border-white/10 pb-2" value={editedRecipe.name} onChange={e => setEditedRecipe({...editedRecipe, name: e.target.value})} />
                             <div className="grid grid-cols-3 gap-3 mb-8">
                                 <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800 text-center">
                                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Dose</div>
-                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-white text-center" value={editedRecipe.dose} onChange={e => setEditedRecipe({...editedRecipe, dose: Number(e.target.value)})} />
+                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-white text-center focus:outline-none" value={editedRecipe.dose} onChange={e => setEditedRecipe({...editedRecipe, dose: Number(e.target.value)})} />
                                 </div>
                                 <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800 text-center">
                                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Yield</div>
-                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-blue-400 text-center" value={editedRecipe.yield} onChange={e => setEditedRecipe({...editedRecipe, yield: Number(e.target.value)})} />
+                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-blue-400 text-center focus:outline-none" value={editedRecipe.yield} onChange={e => setEditedRecipe({...editedRecipe, yield: Number(e.target.value)})} />
                                 </div>
                                 <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800 text-center">
                                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Temp</div>
-                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-rose-400 text-center" value={editedRecipe.temp} onChange={e => setEditedRecipe({...editedRecipe, temp: Number(e.target.value)})} />
+                                    <input type="number" className="w-full bg-transparent font-mono text-2xl font-black text-rose-400 text-center focus:outline-none" value={editedRecipe.temp} onChange={e => setEditedRecipe({...editedRecipe, temp: Number(e.target.value)})} />
                                 </div>
                             </div>
                             <div className="mb-8"><ProgressGraph recipe={editedRecipe} time={0} showIndicator={false} /></div>
@@ -330,9 +364,9 @@
                                 {editedRecipe.steps.map((s, idx) => (
                                     <div key={idx} className="bg-slate-900 p-5 rounded-3xl border border-slate-800">
                                         <div className="flex gap-2 mb-4">
-                                            <input className="flex-1 bg-slate-800 rounded-xl px-4 py-3 text-sm font-bold text-white focus:ring-1 ring-blue-500" value={s.name} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].name = e.target.value; setEditedRecipe({...editedRecipe, steps: ns}); }} />
+                                            <input className="flex-1 bg-slate-800 rounded-xl px-4 py-3 text-sm font-bold text-white focus:ring-1 ring-blue-500 focus:outline-none" value={s.name} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].name = e.target.value; setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                             <div className="flex items-center gap-2 bg-slate-800 px-3 rounded-xl">
-                                                <input type="number" className="w-8 bg-transparent text-center font-mono text-blue-400 font-bold" value={s.duration} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].duration = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
+                                                <input type="number" className="w-8 bg-transparent text-center font-mono text-blue-400 font-bold focus:outline-none" value={s.duration} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].duration = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                                 <span className="text-[10px] text-slate-500 font-bold">S</span>
                                             </div>
                                         </div>
@@ -348,11 +382,11 @@
                                         </div>
                                     </div>
                                 ))}
-                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold">+ 단계 추가</button>
+                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold hover:bg-slate-900/50 transition-colors">+ 단계 추가</button>
                             </div>
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
-                                    <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white">저장</button>
+                                    <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white hover:bg-slate-700 transition-colors">저장</button>
                                     <button onClick={async () => { 
                                         await initAudio(); 
                                         setElapsedTime(0); 
@@ -392,7 +426,6 @@
                                     <div className="text-center">
                                         <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-6 bg-slate-900/50 py-2 rounded-full border border-white/5">{activeStep?.name}</div>
                                         
-                                        {/* 압력 표시부 고정 높이 적용 (레이아웃 흔들림 방지) */}
                                         <div className="pressure-container">
                                             <div className="flex items-center gap-3">
                                                 <div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-right">{activeStep?.pressure}</div>
@@ -402,7 +435,7 @@
                                                         <div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-left">{activeStep.pressureEnd}</div>
                                                     </>
                                                 ) : (
-                                                    <div className="w-[1.5ch]"></div> // 공간 대칭을 위한 더미
+                                                    <div className="w-[1.5ch]"></div>
                                                 )}
                                                 <div className="text-2xl font-black text-cyan-500 self-end mb-2 ml-1">BAR</div>
                                             </div>
