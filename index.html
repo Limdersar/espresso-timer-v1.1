@@ -298,7 +298,19 @@
                             <div className="flex justify-between items-center mb-10">
                                 <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent italic">FLAIR 58</h1>
                                 <button onClick={() => {
-                                    const r = { id: Date.now(), name: 'New Recipe', dose: 18, yield: 36, temp: 93, steps: [{ name: 'Extraction', duration: 30, pressure: 9, pressureEnd: 9 }] };
+                                    const r = { 
+                                        id: Date.now(), 
+                                        name: 'New Recipe', 
+                                        dose: 18, 
+                                        yield: 36, 
+                                        temp: 93, 
+                                        steps: [
+                                            { name: 'Pre-infusion', duration: 8, pressure: 2, pressureEnd: 3 },
+                                            { name: 'Ramp-up', duration: 3, pressure: 3, pressureEnd: 9 },
+                                            { name: 'Main-extraction', duration: 10, pressure: 9, pressureEnd: 9 },
+                                            { name: 'Tapering', duration: 8, pressure: 9, pressureEnd: 4 }
+                                        ] 
+                                    };
                                     setRecipes([...recipes, r]);
                                     setSelectedIdx(recipes.length);
                                     setEditedRecipe(r);
@@ -481,3 +493,4 @@
     </script>
 </body>
 </html>
+
