@@ -9,6 +9,12 @@
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js" type="module"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js" type="module"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js" type="module"></script>
+
     <style>
         body {
             background-color: #020617;
@@ -33,58 +39,51 @@
     </style>
 </head>
 <body>
-    <!-- iOS 오디오 잠금 해제를 위한 무음 오디오 소스 -->
     <audio id="silent-audio" preload="auto" style="display:none;">
         <source src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==" type="audio/wav">
     </audio>
     <div id="root"></div>
+
+    <script type="module">
+        // Firebase modules import
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, addDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'espresso-timer-default';
+
+        window.FirebaseOps = { auth, db, appId, signInAnonymously, signInWithCustomToken, onAuthStateChanged, doc, setDoc, getDoc, collection, onSnapshot, query, addDoc, updateDoc, deleteDoc };
+    </script>
 
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
 
         const Icon = ({ name, size = 24, className = "" }) => {
             const spanRef = useRef(null);
-            
             useEffect(() => {
                 if (spanRef.current && window.lucide) {
                     spanRef.current.innerHTML = `<i data-lucide="${name}"></i>`;
                     window.lucide.createIcons({
                         root: spanRef.current,
-                        attrs: {
-                            width: size,
-                            height: size,
-                            'stroke-width': 2
-                        }
+                        attrs: { width: size, height: size, 'stroke-width': 2 }
                     });
                 }
             }, [name, size]);
-            
             return <span ref={spanRef} className={`inline-flex items-center justify-center ${className}`}></span>;
         };
 
         const App = () => {
+            const [user, setUser] = useState(null);
             const [view, setView] = useState('list');
             const [toast, setToast] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
-
-            const [recipes, setRecipes] = useState([
-                {
-                    id: 1,
-                    name: 'Classic Flair 58 Profile',
-                    dose: 18,
-                    yield: 36,
-                    temp: 93,
-                    steps: [
-                        { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
-                        { name: 'Ramp Up', duration: 3, pressure: 2, pressureEnd: 9 },
-                        { name: 'Main Extraction', duration: 20, pressure: 9, pressureEnd: 9 },
-                        { name: 'Tapering', duration: 7, pressure: 9, pressureEnd: 6 }
-                    ]
-                }
-            ]);
+            const [recipes, setRecipes] = useState([]);
             const [selectedIdx, setSelectedIdx] = useState(0);
             const [editedRecipe, setEditedRecipe] = useState(null);
-
             const [status, setStatus] = useState('idle');
             const [countdown, setCountdown] = useState(5);
             const [elapsedTime, setElapsedTime] = useState(0);
@@ -93,14 +92,54 @@
             const timerRef = useRef(null);
             const audioCtx = useRef(null);
             const voicesRef = useRef([]);
-            const lastSpokenSec = useRef(-1); // 중복 발화 방지용
+            const lastSpokenSec = useRef(-1);
 
-            const currentRecipe = recipes[selectedIdx] || recipes[0];
+            // 1. Firebase Auth Initialization
+            useEffect(() => {
+                const { auth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FirebaseOps;
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+                return () => unsubscribe();
+            }, []);
+
+            // 2. Real-time Firestore Subscription
+            useEffect(() => {
+                if (!user) return;
+                const { db, appId, collection, onSnapshot } = window.FirebaseOps;
+                const recipesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recipes');
+                
+                const unsubscribe = onSnapshot(recipesRef, (snapshot) => {
+                    const loadedRecipes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    if (loadedRecipes.length === 0) {
+                        // 초기 데이터가 없는 경우 기본값 생성
+                        const defaultRecipe = {
+                            name: 'Classic Flair 58 Profile',
+                            dose: 18, yield: 36, temp: 93,
+                            steps: [
+                                { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
+                                { name: 'Ramp Up', duration: 3, pressure: 2, pressureEnd: 9 },
+                                { name: 'Main Extraction', duration: 20, pressure: 9, pressureEnd: 9 },
+                                { name: 'Tapering', duration: 7, pressure: 9, pressureEnd: 6 }
+                            ]
+                        };
+                        window.FirebaseOps.addDoc(recipesRef, defaultRecipe);
+                    } else {
+                        setRecipes(loadedRecipes);
+                    }
+                }, (error) => console.error("Firestore sync error:", error));
+
+                return () => unsubscribe();
+            }, [user]);
 
             useEffect(() => {
-                const loadVoices = () => {
-                    voicesRef.current = window.speechSynthesis.getVoices();
-                };
+                const loadVoices = () => { voicesRef.current = window.speechSynthesis.getVoices(); };
                 loadVoices();
                 if (window.speechSynthesis.onvoiceschanged !== undefined) {
                     window.speechSynthesis.onvoiceschanged = loadVoices;
@@ -116,17 +155,11 @@
                 if (!audioCtx.current) {
                     audioCtx.current = new (window.AudioContext || window.webkitAudioContext)();
                 }
-                if (audioCtx.current.state === 'suspended') {
-                    audioCtx.current.resume();
-                }
+                if (audioCtx.current.state === 'suspended') { audioCtx.current.resume(); }
                 const silentAudio = document.getElementById('silent-audio');
-                if (silentAudio) {
-                    silentAudio.play().catch(() => {});
-                }
+                if (silentAudio) { silentAudio.play().catch(() => {}); }
                 window.speechSynthesis.cancel();
-                if (window.speechSynthesis.paused) {
-                    window.speechSynthesis.resume();
-                }
+                if (window.speechSynthesis.paused) { window.speechSynthesis.resume(); }
                 const unlockTTS = new SpeechSynthesisUtterance(" ");
                 unlockTTS.volume = 0;
                 window.speechSynthesis.speak(unlockTTS);
@@ -167,38 +200,23 @@
                     window.speechSynthesis.cancel();
                     const utterance = new SpeechSynthesisUtterance(text);
                     const isEnglish = /[a-zA-Z]/.test(text);
-                    if (isEnglish) {
-                        utterance.lang = 'en-US';
-                        const femaleVoice = voicesRef.current.find(v => v.lang.includes('en') && (v.name.includes('Samantha') || v.name.includes('Victoria')));
-                        if (femaleVoice) utterance.voice = femaleVoice;
-                    } else {
-                        utterance.lang = 'ko-KR';
-                        const koVoices = voicesRef.current.filter(v => v.lang.includes('ko'));
-                        let targetVoice = koVoices.find(v => v.name.includes('Sora') || v.name.includes('Jiyeon') || v.name.includes('SunHi'));
-                        if (!targetVoice) {
-                            targetVoice = koVoices.find(v => !v.name.toLowerCase().includes('yuna') && !v.name.includes('유나') && !v.name.toLowerCase().includes('heami'));
-                        }
-                        if (!targetVoice && koVoices.length > 0) targetVoice = koVoices[0];
-                        if (targetVoice) utterance.voice = targetVoice;
-                    }
+                    utterance.lang = isEnglish ? 'en-US' : 'ko-KR';
                     utterance.pitch = 1.25; 
                     utterance.rate = 1.05;
                     window.speechSynthesis.speak(utterance);
                 } catch (e) {}
             };
 
-            const totalDuration = useMemo(() => 
-                currentRecipe?.steps.reduce((acc, s) => acc + s.duration, 0) || 0
-            , [currentRecipe]);
+            const currentRecipe = recipes[selectedIdx] || recipes[0];
+            const totalDuration = useMemo(() => currentRecipe?.steps.reduce((acc, s) => acc + s.duration, 0) || 0, [currentRecipe]);
 
             const getStepInfoAtTime = (time) => {
+                if(!currentRecipe) return { idx: 0, remainingInStep: 0, totalInStep: 0 };
                 let acc = 0;
                 for (let i = 0; i < currentRecipe.steps.length; i++) {
                     const stepDuration = currentRecipe.steps[i].duration;
                     acc += stepDuration;
-                    if (time < acc) {
-                        return { idx: i, remainingInStep: acc - time, totalInStep: stepDuration };
-                    }
+                    if (time < acc) return { idx: i, remainingInStep: acc - time, totalInStep: stepDuration };
                 }
                 return { idx: currentRecipe.steps.length - 1, remainingInStep: 0, totalInStep: currentRecipe.steps[currentRecipe.steps.length - 1].duration };
             };
@@ -210,7 +228,6 @@
                         speak(krCounts[countdown]);
                         lastSpokenSec.current = countdown;
                     }
-                    
                     const interval = setInterval(() => {
                         setCountdown(prev => {
                             if (prev <= 1) {
@@ -228,22 +245,17 @@
                     }, 1000);
                     return () => clearInterval(interval);
                 }
-                
                 if (status === 'running') {
                     const start = Date.now() - (elapsedTime * 1000);
                     timerRef.current = setInterval(() => {
                         const now = (Date.now() - start) / 1000;
                         const { idx: stepIdx, remainingInStep, totalInStep } = getStepInfoAtTime(now);
-                        
-                        // 단계 전환 처리
                         if (stepIdx !== activeStepIdx && stepIdx < currentRecipe.steps.length) {
                             setActiveStepIdx(stepIdx);
                             playStepTransition();
                             speak(currentRecipe.steps[stepIdx].name);
-                            lastSpokenSec.current = -1; // 새 단계 시작 시 초기화
+                            lastSpokenSec.current = -1;
                         }
-                        
-                        // 단계 종료 3초 전 카운트다운 (5초 이상인 단계만)
                         if (totalInStep >= 5 && remainingInStep <= 3.1 && remainingInStep > 0) {
                             const roundedRemaining = Math.ceil(remainingInStep);
                             if (roundedRemaining > 0 && roundedRemaining <= 3 && lastSpokenSec.current !== roundedRemaining) {
@@ -252,7 +264,6 @@
                                 lastSpokenSec.current = roundedRemaining;
                             }
                         }
-                        
                         if (now >= totalDuration) {
                             setElapsedTime(totalDuration);
                             setStatus('finished');
@@ -267,12 +278,43 @@
                 }
             }, [status, activeStepIdx, currentRecipe, elapsedTime, totalDuration]);
 
+            const handleSave = async () => {
+                if (!user) return;
+                const { db, appId, doc, updateDoc, addDoc, collection } = window.FirebaseOps;
+                try {
+                    if (editedRecipe.id) {
+                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'recipes', editedRecipe.id);
+                        const { id, ...data } = editedRecipe;
+                        await updateDoc(docRef, data);
+                    } else {
+                        const recipesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recipes');
+                        await addDoc(recipesRef, editedRecipe);
+                    }
+                    setView('list');
+                    showToast("저장되었습니다.");
+                } catch (e) {
+                    showToast("저장 중 오류 발생");
+                }
+            };
+
+            const handleDelete = async () => {
+                if (!user || recipes.length <= 1) return;
+                const { db, appId, doc, deleteDoc } = window.FirebaseOps;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recipes', editedRecipe.id));
+                    setSelectedIdx(0);
+                    setView('list');
+                    showToast("삭제되었습니다.");
+                } catch (e) {
+                    showToast("삭제 오류");
+                }
+            };
+
             const ProgressGraph = ({ recipe, time, showIndicator = true }) => {
                 if (!recipe || !recipe.steps || recipe.steps.length === 0) return null;
                 const recipeTotal = recipe.steps.reduce((acc, s) => acc + s.duration, 0);
                 let currentX = 20;
-                const points = [];
-                points.push(`20,${90 - (recipe.steps[0].pressure / 11) * 80}`);
+                const points = [`20,${90 - (recipe.steps[0].pressure / 11) * 80}`];
                 recipe.steps.forEach(s => {
                     const stepW = (s.duration / recipeTotal) * 360;
                     const endY = 90 - ((s.pressureEnd || s.pressure) / 11) * 80;
@@ -298,12 +340,7 @@
                             <div className="flex justify-between items-center mb-10">
                                 <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent italic">FLAIR 58</h1>
                                 <button onClick={() => {
-                                    const r = { 
-                                        id: Date.now(), 
-                                        name: 'New Recipe', 
-                                        dose: 18, 
-                                        yield: 36, 
-                                        temp: 93, 
+                                    const r = { name: 'New Recipe', dose: 18, yield: 36, temp: 93, 
                                         steps: [
                                             { name: 'Pre-infusion', duration: 8, pressure: 2, pressureEnd: 3 },
                                             { name: 'Ramp-up', duration: 3, pressure: 3, pressureEnd: 9 },
@@ -311,9 +348,8 @@
                                             { name: 'Tapering', duration: 8, pressure: 9, pressureEnd: 4 }
                                         ] 
                                     };
-                                    setRecipes([...recipes, r]);
-                                    setSelectedIdx(recipes.length);
                                     setEditedRecipe(r);
+                                    setSelectedIdx(recipes.length);
                                     setView('detail');
                                 }} className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/20 text-white"><Icon name="plus" /></button>
                             </div>
@@ -349,14 +385,7 @@
                                 <button onClick={() => setView('list')} className="p-2 text-slate-400"><Icon name="chevron-left" size={32}/></button>
                                 <div className="flex gap-2">
                                     <button onClick={() => setIsMuted(!isMuted)} className="p-3 bg-slate-900 rounded-xl border border-slate-800"><Icon name={isMuted ? "volume-x" : "volume-2"} size={20}/></button>
-                                    <button onClick={() => { 
-                                        if(recipes.length > 1) { 
-                                            const newRecipes = recipes.filter((_, i) => i !== selectedIdx);
-                                            setRecipes(newRecipes); 
-                                            setSelectedIdx(0);
-                                            setView('list'); 
-                                        } 
-                                    }} className="p-3 bg-rose-500/10 text-rose-500 rounded-xl"><Icon name="trash-2" size={20}/></button>
+                                    <button onClick={handleDelete} className="p-3 bg-rose-500/10 text-rose-500 rounded-xl"><Icon name="trash-2" size={20}/></button>
                                 </div>
                             </div>
                             <input className="w-full bg-transparent text-3xl font-black mb-8 focus:outline-none text-white border-b border-white/10 pb-2" value={editedRecipe.name} onChange={e => setEditedRecipe({...editedRecipe, name: e.target.value})} />
@@ -401,16 +430,8 @@
                             </div>
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
-                                    <button onClick={() => { setRecipes(prev => { const n = [...prev]; n[selectedIdx] = editedRecipe; return n; }); setView('list'); showToast("저장되었습니다."); }} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white hover:bg-slate-700 transition-colors">저장</button>
-                                    <button onClick={() => { 
-                                        fastUnlockAudio();
-                                        setElapsedTime(0); 
-                                        setActiveStepIdx(0); 
-                                        setCountdown(5); 
-                                        lastSpokenSec.current = -1;
-                                        setStatus('countdown'); 
-                                        setView('active'); 
-                                    }} className="flex-[2] py-5 bg-blue-600 rounded-[2rem] font-black text-xl text-white shadow-2xl active:scale-95 transition-transform">추출 시작</button>
+                                    <button onClick={handleSave} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white hover:bg-slate-700 transition-colors">저장</button>
+                                    <button onClick={() => { fastUnlockAudio(); setElapsedTime(0); setActiveStepIdx(0); setCountdown(5); lastSpokenSec.current = -1; setStatus('countdown'); setView('active'); }} className="flex-[2] py-5 bg-blue-600 rounded-[2rem] font-black text-xl text-white shadow-2xl active:scale-95 transition-transform">추출 시작</button>
                                 </div>
                             </div>
                         </div>
@@ -418,15 +439,14 @@
                 );
             }
 
-            const activeStep = currentRecipe.steps[activeStepIdx];
-
+            const activeStep = currentRecipe?.steps[activeStepIdx];
             return (
                 <div className="min-h-screen safe-top safe-bottom p-8 flex flex-col items-center overflow-hidden text-white bg-slate-950">
                     <div className="w-full max-w-md h-full flex flex-col">
                         <header className="flex justify-between items-start mb-4">
                             <div className="space-y-2">
-                                <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div><h2 className="text-sm font-bold uppercase text-slate-300">{currentRecipe.name}</h2></div>
-                                <div className="flex gap-4 text-xs font-mono text-slate-400 font-black"><span>{currentRecipe.dose}g</span><span>{currentRecipe.yield}g</span><span>{currentRecipe.temp}°C</span></div>
+                                <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div><h2 className="text-sm font-bold uppercase text-slate-300">{currentRecipe?.name}</h2></div>
+                                <div className="flex gap-4 text-xs font-mono text-slate-400 font-black"><span>{currentRecipe?.dose}g</span><span>{currentRecipe?.yield}g</span><span>{currentRecipe?.temp}°C</span></div>
                             </div>
                             <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="p-3 bg-slate-900 rounded-full text-slate-400"><Icon name="rotate-ccw" size={18} /></button>
                         </header>
@@ -441,23 +461,16 @@
                                 <div className="space-y-12">
                                     <div className="text-center">
                                         <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-6 bg-slate-900/50 py-2 rounded-full border border-white/5">{activeStep?.name}</div>
-                                        
                                         <div className="pressure-container">
                                             <div className="flex items-center gap-3">
                                                 <div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-right">{activeStep?.pressure}</div>
                                                 {activeStep?.pressureEnd && activeStep.pressureEnd !== activeStep.pressure ? (
-                                                    <>
-                                                        <Icon name="arrow-right" size={40} className="text-slate-600" />
-                                                        <div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-left">{activeStep.pressureEnd}</div>
-                                                    </>
-                                                ) : (
-                                                    <div className="w-[1.5ch]"></div>
-                                                )}
+                                                    <><Icon name="arrow-right" size={40} className="text-slate-600" /><div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-left">{activeStep.pressureEnd}</div></>
+                                                ) : <div className="w-[1.5ch]"></div>}
                                                 <div className="text-2xl font-black text-cyan-500 self-end mb-2 ml-1">BAR</div>
                                             </div>
                                         </div>
                                     </div>
-
                                     <div className="space-y-10">
                                         <ProgressGraph recipe={currentRecipe} time={elapsedTime} />
                                         <div className="flex justify-between items-end px-2">
@@ -477,7 +490,7 @@
                                 <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="w-full py-6 bg-blue-600 rounded-[2.5rem] text-2xl font-black text-white shadow-2xl active:scale-95 transition-transform">DONE</button>
                             ) : (
                                 <div className="grid grid-cols-4 gap-2">
-                                    {currentRecipe.steps.map((_, i) => (
+                                    {currentRecipe?.steps.map((_, i) => (
                                         <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === activeStepIdx ? 'bg-blue-500 shadow-lg shadow-blue-500/50' : i < activeStepIdx ? 'bg-slate-700' : 'bg-slate-900'}`} />
                                     ))}
                                 </div>
