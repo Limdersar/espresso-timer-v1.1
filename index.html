@@ -66,16 +66,24 @@
             return <span ref={spanRef} className={`inline-flex items-center justify-center ${className}`}></span>;
         };
 
+        // 초기 레시피 값 정의 (공통 사용)
+        const getInitialRecipeData = () => ({
+            name: 'Classic Flair 58 Profile', 
+            dose: 18, 
+            yield: 36, 
+            temp: 93,
+            steps: [
+                { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
+                { name: 'Ramp Up', duration: 4, pressure: 2, pressureEnd: 6.5 },
+                { name: 'Main Extraction', duration: 11, pressure: 6.5, pressureEnd: 6.5 },
+                { name: 'Tapering', duration: 5, pressure: 6.5, pressureEnd: 4 }
+            ]
+        });
+
         const defaultRecipes = [
             {
                 id: 'default-1',
-                name: 'Classic Flair 58 Profile', dose: 18, yield: 36, temp: 93,
-                steps: [
-                    { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
-                    { name: 'Ramp Up', duration: 3, pressure: 2, pressureEnd: 9 },
-                    { name: 'Main Extraction', duration: 20, pressure: 9, pressureEnd: 9 },
-                    { name: 'Tapering', duration: 7, pressure: 9, pressureEnd: 6 }
-                ]
+                ...getInitialRecipeData()
             }
         ];
 
@@ -320,12 +328,10 @@
                                 <div className="flex gap-2">
                                     <button onClick={() => setShowImportModal(true)} className="p-3 bg-slate-800 rounded-2xl text-slate-300"><Icon name="download" /></button>
                                     <button onClick={() => {
+                                        // 새 레시피 생성 시 요청하신 초기값으로 설정
                                         setEditedRecipe({ 
-                                            name: 'New Profile', dose: 18, yield: 36, temp: 93, 
-                                            steps: [
-                                                { name: 'Pre-infusion', duration: 8, pressure: 2, pressureEnd: 2 },
-                                                { name: 'Main', duration: 25, pressure: 9, pressureEnd: 9 }
-                                            ] 
+                                            name: 'New Profile', 
+                                            ...getInitialRecipeData() 
                                         });
                                         setSelectedIdx(recipes.length); setView('detail');
                                     }} className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/20 text-white"><Icon name="plus" /></button>
@@ -515,4 +521,3 @@
     </script>
 </body>
 </html>
-
