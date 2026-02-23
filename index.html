@@ -33,6 +33,12 @@
             align-items: center;
             justify-content: center;
         }
+
+        /* Modal Blur */
+        .modal-overlay {
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(8px);
+        }
     </style>
 </head>
 <body>
@@ -43,6 +49,8 @@
 
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
+
+        const STORAGE_KEY = 'espresso_timer_recipes';
 
         const Icon = ({ name, size = 24, className = "" }) => {
             const spanRef = useRef(null);
@@ -58,23 +66,30 @@
             return <span ref={spanRef} className={`inline-flex items-center justify-center ${className}`}></span>;
         };
 
-        const defaultRecipe = {
-            name: 'Classic Flair 58 Profile', dose: 18, yield: 36, temp: 93,
-            steps: [
-                { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
-                { name: 'Ramp Up', duration: 3, pressure: 2, pressureEnd: 9 },
-                { name: 'Main Extraction', duration: 20, pressure: 9, pressureEnd: 9 },
-                { name: 'Tapering', duration: 7, pressure: 9, pressureEnd: 6 }
-            ]
-        };
+        const defaultRecipes = [
+            {
+                id: 'default-1',
+                name: 'Classic Flair 58 Profile', dose: 18, yield: 36, temp: 93,
+                steps: [
+                    { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
+                    { name: 'Ramp Up', duration: 3, pressure: 2, pressureEnd: 9 },
+                    { name: 'Main Extraction', duration: 20, pressure: 9, pressureEnd: 9 },
+                    { name: 'Tapering', duration: 7, pressure: 9, pressureEnd: 6 }
+                ]
+            }
+        ];
 
         const App = () => {
             const [view, setView] = useState('list');
             const [toast, setToast] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
             
-            // State initialization (Always render UI immediately)
-            const [recipes, setRecipes] = useState([defaultRecipe]);
+            // Local Storage Logic
+            const [recipes, setRecipes] = useState(() => {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                return saved ? JSON.parse(saved) : defaultRecipes;
+            });
+
             const [selectedIdx, setSelectedIdx] = useState(0);
             const [editedRecipe, setEditedRecipe] = useState(null);
             
@@ -82,10 +97,6 @@
             const [countdown, setCountdown] = useState(5);
             const [elapsedTime, setElapsedTime] = useState(0);
             const [activeStepIdx, setActiveStepIdx] = useState(0);
-
-            // Cloud Data States
-            const [fbOps, setFbOps] = useState(null);
-            const [user, setUser] = useState(null);
 
             // Import Modal States
             const [showImportModal, setShowImportModal] = useState(false);
@@ -96,63 +107,10 @@
             const voicesRef = useRef([]);
             const lastSpokenSec = useRef(-1);
 
-            // Dynamic Firebase Initialization (Non-blocking)
+            // Sync with Local Storage
             useEffect(() => {
-                let unsubscribeAuth = null;
-                let unsubscribeSnapshot = null;
-
-                const initFirebase = async () => {
-                    try {
-                        const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
-                        const { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
-                        const { getFirestore, doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
-                        
-                        if(typeof __firebase_config === 'undefined') return;
-
-                        const firebaseConfig = JSON.parse(__firebase_config);
-                        const app = initializeApp(firebaseConfig);
-                        const auth = getAuth(app);
-                        const db = getFirestore(app);
-                        const appId = typeof __app_id !== 'undefined' ? __app_id : 'espresso-timer-default';
-
-                        setFbOps({ db, appId, doc, collection, addDoc, updateDoc, deleteDoc });
-
-                        const initAuth = async () => {
-                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                                await signInWithCustomToken(auth, __initial_auth_token);
-                            } else {
-                                await signInAnonymously(auth);
-                            }
-                        };
-                        await initAuth();
-
-                        unsubscribeAuth = onAuthStateChanged(auth, (u) => {
-                            setUser(u);
-                            if (u) {
-                                const q = collection(db, 'artifacts', appId, 'users', u.uid, 'recipes');
-                                unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
-                                    const loaded = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                                    if (loaded.length > 0) {
-                                        setRecipes(loaded);
-                                    } else {
-                                        // Save default recipe silently
-                                        addDoc(q, defaultRecipe);
-                                    }
-                                }, (err) => console.error("Sync error, using local data", err));
-                            }
-                        });
-                    } catch (e) {
-                        console.log("Running in local mode without cloud sync.");
-                    }
-                };
-                
-                initFirebase();
-
-                return () => {
-                    if (unsubscribeAuth) unsubscribeAuth();
-                    if (unsubscribeSnapshot) unsubscribeSnapshot();
-                };
-            }, []);
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+            }, [recipes]);
 
             useEffect(() => {
                 const loadVoices = () => { voicesRef.current = window.speechSynthesis.getVoices(); };
@@ -167,7 +125,6 @@
                 setTimeout(() => setToast(null), 3000);
             };
 
-            // Audio Functions
             const fastUnlockAudio = () => {
                 if (!audioCtx.current) { audioCtx.current = new (window.AudioContext || window.webkitAudioContext)(); }
                 if (audioCtx.current.state === 'suspended') { audioCtx.current.resume(); }
@@ -204,7 +161,6 @@
                 } catch (e) {}
             };
 
-            // Logic calculations
             const currentRecipe = recipes[selectedIdx] || recipes[0];
             const totalDuration = useMemo(() => currentRecipe?.steps.reduce((acc, s) => acc + s.duration, 0) || 0, [currentRecipe]);
 
@@ -216,10 +172,10 @@
                     acc += stepDuration;
                     if (time < acc) return { idx: i, remainingInStep: acc - time, totalInStep: stepDuration };
                 }
-                return { idx: currentRecipe.steps.length - 1, remainingInStep: 0, totalInStep: currentRecipe.steps[currentRecipe.steps.length - 1].duration };
+                const lastIdx = currentRecipe.steps.length - 1;
+                return { idx: lastIdx, remainingInStep: 0, totalInStep: currentRecipe.steps[lastIdx].duration };
             };
 
-            // Timer Loop
             useEffect(() => {
                 if (status === 'countdown') {
                     const krCounts = ["", "일", "이", "삼", "사", "오"];
@@ -228,7 +184,7 @@
                         setCountdown(prev => {
                             if (prev <= 1) {
                                 setStatus('running');
-                                playBeep(880, 0.15, 'square', 0.2); setTimeout(() => playBeep(880, 0.1, 'square', 0.2), 200);
+                                playBeep(880, 0.15, 'square', 0.2); 
                                 speak(currentRecipe.steps[0].name);
                                 lastSpokenSec.current = -1; 
                                 return 0;
@@ -245,12 +201,14 @@
                     timerRef.current = setInterval(() => {
                         const now = (Date.now() - start) / 1000;
                         const { idx: stepIdx, remainingInStep, totalInStep } = getStepInfoAtTime(now);
+                        
                         if (stepIdx !== activeStepIdx && stepIdx < currentRecipe.steps.length) {
                             setActiveStepIdx(stepIdx);
-                            playBeep(880, 0.15, 'square', 0.2); setTimeout(() => playBeep(880, 0.1, 'square', 0.2), 200);
+                            playBeep(880, 0.15, 'square', 0.2);
                             speak(currentRecipe.steps[stepIdx].name);
                             lastSpokenSec.current = -1;
                         }
+
                         if (totalInStep >= 5 && remainingInStep <= 3.1 && remainingInStep > 0) {
                             const roundedRemaining = Math.ceil(remainingInStep);
                             if (roundedRemaining > 0 && roundedRemaining <= 3 && lastSpokenSec.current !== roundedRemaining) {
@@ -258,9 +216,9 @@
                                 speak(krCounts[roundedRemaining]); lastSpokenSec.current = roundedRemaining;
                             }
                         }
+
                         if (now >= totalDuration) {
                             setElapsedTime(totalDuration); setStatus('finished');
-                            let delay = 0; [1, 2, 3].forEach(() => { setTimeout(() => playBeep(1200, 0.8, 'sine', 0.25), delay); delay += 800; });
                             speak("추출 완료");
                             clearInterval(timerRef.current);
                         } else {
@@ -271,45 +229,34 @@
                 }
             }, [status, activeStepIdx, currentRecipe, elapsedTime, totalDuration]);
 
-            // Database Actions (with local fallback)
-            const handleSave = async () => {
-                if (fbOps && user) {
-                    const { db, appId, doc, updateDoc, addDoc, collection } = fbOps;
-                    try {
-                        if (editedRecipe.id) {
-                            await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recipes', editedRecipe.id), editedRecipe);
-                        } else {
-                            await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'recipes'), editedRecipe);
-                        }
-                        showToast("저장되었습니다.");
-                    } catch (e) { showToast("저장 실패"); }
+            // CRUD Actions
+            const handleSave = () => {
+                if (editedRecipe.id) {
+                    setRecipes(prev => prev.map(r => r.id === editedRecipe.id ? editedRecipe : r));
                 } else {
-                    if(editedRecipe.id) { setRecipes(prev => prev.map(r => r.id === editedRecipe.id ? editedRecipe : r)); }
-                    else { setRecipes(prev => [...prev, {...editedRecipe, id: Date.now().toString()}]); }
-                    showToast("저장되었습니다. (오프라인)");
+                    const newRecipe = { ...editedRecipe, id: 'recipe-' + Date.now() };
+                    setRecipes(prev => [...prev, newRecipe]);
                 }
+                showToast("레시피가 저장되었습니다.");
                 setView('list');
             };
 
-            const handleDelete = async () => {
-                if (recipes.length <= 1) return;
-                if (fbOps && user && editedRecipe.id) {
-                    try {
-                        await fbOps.deleteDoc(fbOps.doc(fbOps.db, 'artifacts', fbOps.appId, 'users', user.uid, 'recipes', editedRecipe.id));
-                        showToast("삭제되었습니다.");
-                    } catch (e) { showToast("삭제 실패"); }
-                } else {
-                    setRecipes(prev => prev.filter(r => r.id !== editedRecipe.id));
-                    showToast("삭제되었습니다.");
+            const handleDelete = () => {
+                if (recipes.length <= 1) {
+                    showToast("최소 한 개의 레시피는 있어야 합니다.");
+                    return;
                 }
-                setSelectedIdx(0); setView('list');
+                setRecipes(prev => prev.filter(r => r.id !== editedRecipe.id));
+                setSelectedIdx(0);
+                showToast("삭제되었습니다.");
+                setView('list');
             };
 
-            // Sharing Functions
+            // Sharing Actions (Base64)
             const exportRecipe = (e, recipe) => {
                 e.stopPropagation();
-                const { id, ...dataToShare } = recipe; // Remove DB ID before sharing
-                const code = btoa(encodeURIComponent(JSON.stringify(dataToShare)));
+                const { id, ...cleanData } = recipe;
+                const code = btoa(encodeURIComponent(JSON.stringify(cleanData)));
                 
                 const textArea = document.createElement("textarea");
                 textArea.value = code;
@@ -317,31 +264,28 @@
                 textArea.select();
                 try {
                     document.execCommand('copy');
-                    showToast("레시피 코드가 복사되었습니다! 친구에게 공유하세요.");
+                    showToast("공유 코드가 클립보드에 복사되었습니다.");
                 } catch (err) {
-                    showToast("코드 복사에 실패했습니다.");
+                    showToast("복사 실패");
                 }
                 document.body.removeChild(textArea);
             };
 
-            const handleImport = async () => {
+            const handleImport = () => {
                 if (!importCode.trim()) return;
                 try {
                     const decoded = JSON.parse(decodeURIComponent(atob(importCode.trim())));
-                    if(decoded.name && decoded.steps) {
-                        if (fbOps && user) {
-                            await fbOps.addDoc(fbOps.collection(fbOps.db, 'artifacts', fbOps.appId, 'users', user.uid, 'recipes'), decoded);
-                        } else {
-                            setRecipes(prev => [...prev, {...decoded, id: Date.now().toString()}]);
-                        }
-                        showToast("새 레시피를 성공적으로 추가했습니다!");
+                    if (decoded.name && decoded.steps) {
+                        const newRecipe = { ...decoded, id: 'recipe-' + Date.now() };
+                        setRecipes(prev => [...prev, newRecipe]);
+                        showToast("새 레시피를 가져왔습니다.");
                         setShowImportModal(false);
                         setImportCode('');
                     } else {
-                        showToast("유효하지 않은 레시피 코드입니다.");
+                        throw new Error();
                     }
                 } catch (e) {
-                    showToast("코드 해석 오류. 올바른 코드인지 확인해주세요.");
+                    showToast("올바른 코드가 아닙니다.");
                 }
             };
 
@@ -374,16 +318,13 @@
                             <div className="flex justify-between items-center mb-10">
                                 <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent italic">FLAIR 58</h1>
                                 <div className="flex gap-2">
-                                    <button onClick={() => setShowImportModal(true)} className="p-3 bg-slate-800 rounded-2xl text-slate-300 hover:text-white transition-colors">
-                                        <Icon name="download" />
-                                    </button>
+                                    <button onClick={() => setShowImportModal(true)} className="p-3 bg-slate-800 rounded-2xl text-slate-300"><Icon name="download" /></button>
                                     <button onClick={() => {
-                                        setEditedRecipe({ name: 'New Recipe', dose: 18, yield: 36, temp: 93, 
+                                        setEditedRecipe({ 
+                                            name: 'New Profile', dose: 18, yield: 36, temp: 93, 
                                             steps: [
-                                                { name: 'Pre-infusion', duration: 8, pressure: 2, pressureEnd: 3 },
-                                                { name: 'Ramp-up', duration: 3, pressure: 3, pressureEnd: 9 },
-                                                { name: 'Main-extraction', duration: 10, pressure: 9, pressureEnd: 9 },
-                                                { name: 'Tapering', duration: 8, pressure: 9, pressureEnd: 4 }
+                                                { name: 'Pre-infusion', duration: 8, pressure: 2, pressureEnd: 2 },
+                                                { name: 'Main', duration: 25, pressure: 9, pressureEnd: 9 }
                                             ] 
                                         });
                                         setSelectedIdx(recipes.length); setView('detail');
@@ -392,9 +333,9 @@
                             </div>
                             <div className="space-y-4">
                                 {recipes.map((r, i) => (
-                                    <div key={r.id || i} onClick={() => { setSelectedIdx(i); setEditedRecipe({...r}); setView('detail'); }} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 active:scale-95 transition-transform cursor-pointer">
+                                    <div key={r.id} onClick={() => { setSelectedIdx(i); setEditedRecipe({...r}); setView('detail'); }} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 active:scale-95 transition-transform cursor-pointer">
                                         <div className="flex justify-between items-start mb-4">
-                                            <div>
+                                            <div className="flex-1">
                                                 <h2 className="text-xl font-bold mb-2 text-white">{r.name}</h2>
                                                 <div className="flex gap-4 text-xs font-bold text-slate-400 uppercase tracking-widest">
                                                     <span className="bg-slate-800 px-2 py-0.5 rounded text-white">{r.dose}g</span>
@@ -402,7 +343,7 @@
                                                     <span className="bg-rose-900/30 px-2 py-0.5 rounded text-rose-400">{r.temp}°C</span>
                                                 </div>
                                             </div>
-                                            <div className="flex gap-3 items-center">
+                                            <div className="flex gap-3 items-center ml-2">
                                                 <button onClick={(e) => exportRecipe(e, r)} className="p-2 bg-slate-800 rounded-xl text-slate-400 hover:text-white active:scale-90 transition-all">
                                                     <Icon name="share-2" size={18} />
                                                 </button>
@@ -417,19 +358,19 @@
 
                         {/* Import Modal */}
                         {showImportModal && (
-                            <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-6 backdrop-blur-sm">
+                            <div className="fixed inset-0 z-50 flex items-center justify-center p-6 modal-overlay">
                                 <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-sm">
-                                    <h3 className="text-xl font-bold mb-2 text-white">레시피 불러오기</h3>
-                                    <p className="text-xs text-slate-400 mb-6 leading-relaxed">공유받은 레시피 코드를 아래 텍스트 박스에 붙여넣고 버튼을 누르세요.</p>
+                                    <h3 className="text-xl font-bold mb-2 text-white">가져오기</h3>
+                                    <p className="text-xs text-slate-400 mb-6">공유받은 레시피 코드를 아래에 붙여넣으세요.</p>
                                     <textarea 
-                                        className="w-full bg-slate-800 text-slate-300 rounded-xl p-4 mb-6 focus:outline-none focus:ring-1 ring-blue-500 min-h-[120px] break-all font-mono text-xs"
-                                        placeholder="이곳을 터치하여 코드 붙여넣기..."
+                                        className="w-full bg-slate-800 text-slate-300 rounded-xl p-4 mb-6 focus:outline-none min-h-[120px] font-mono text-xs"
+                                        placeholder="여기에 코드 붙여넣기..."
                                         value={importCode}
                                         onChange={e => setImportCode(e.target.value)}
                                     />
                                     <div className="flex gap-3">
-                                        <button onClick={() => { setShowImportModal(false); setImportCode(''); }} className="flex-1 py-4 bg-slate-800 rounded-2xl font-bold text-white">취소</button>
-                                        <button onClick={handleImport} className="flex-1 py-4 bg-blue-600 rounded-2xl font-bold text-white">불러오기</button>
+                                        <button onClick={() => setShowImportModal(false)} className="flex-1 py-4 bg-slate-800 rounded-2xl font-bold text-white">취소</button>
+                                        <button onClick={handleImport} className="flex-1 py-4 bg-blue-600 rounded-2xl font-bold text-white">확인</button>
                                     </div>
                                 </div>
                             </div>
@@ -489,7 +430,7 @@
                                         </div>
                                     </div>
                                 ))}
-                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold hover:bg-slate-900/50 transition-colors">+ 단계 추가</button>
+                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'New Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold">+ 단계 추가</button>
                             </div>
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
@@ -508,8 +449,13 @@
                     <div className="w-full max-w-md h-full flex flex-col">
                         <header className="flex justify-between items-start mb-4">
                             <div className="space-y-2">
-                                <div className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div><h2 className="text-sm font-bold uppercase text-slate-300">{currentRecipe?.name}</h2></div>
-                                <div className="flex gap-4 text-xs font-mono text-slate-400 font-black"><span>{currentRecipe?.dose}g</span><span>{currentRecipe?.yield}g</span><span>{currentRecipe?.temp}°C</span></div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+                                    <h2 className="text-sm font-bold uppercase text-slate-300 truncate max-w-[200px]">{currentRecipe?.name}</h2>
+                                </div>
+                                <div className="flex gap-4 text-xs font-mono text-slate-400 font-black">
+                                    <span>{currentRecipe?.dose}g</span><span>{currentRecipe?.yield}g</span><span>{currentRecipe?.temp}°C</span>
+                                </div>
                             </div>
                             <button onClick={() => { setStatus('idle'); setElapsedTime(0); setView('list'); }} className="p-3 bg-slate-900 rounded-full text-slate-400"><Icon name="rotate-ccw" size={18} /></button>
                         </header>
@@ -569,5 +515,4 @@
     </script>
 </body>
 </html>
-
 
