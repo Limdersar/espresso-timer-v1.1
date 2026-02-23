@@ -10,11 +10,6 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <!-- Firebase SDK -->
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js" type="module"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js" type="module"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js" type="module"></script>
-
     <style>
         body {
             background-color: #020617;
@@ -22,19 +17,34 @@
             -webkit-tap-highlight-color: transparent;
             overscroll-behavior-y: contain;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
         }
         .safe-top { padding-top: env(safe-area-inset-top); }
         .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
-        input[type="range"] { -webkit-appearance: none; background: transparent; cursor: pointer; }
+        input[type="range"] { -webkit-appearance: none; background: transparent; cursor: pointer; width: 100%; }
         input[type="range"]::-webkit-slider-runnable-track { background: #1e293b; height: 6px; border-radius: 3px; }
         input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; height: 20px; width: 20px; background: #3b82f6; border-radius: 50%; margin-top: -7px; border: 2px solid #020617; }
-        input { color: white !important; }
         
         .pressure-container {
             height: 180px;
             display: flex;
             align-items: center;
             justify-content: center;
+        }
+        
+        /* Loading Spinner */
+        .loader {
+            border: 3px solid #1e293b;
+            border-radius: 50%;
+            border-top: 3px solid #3b82f6;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -44,20 +54,10 @@
     </audio>
     <div id="root"></div>
 
-    <script type="module">
-        // Firebase modules import
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, addDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'espresso-timer-default';
-
-        window.FirebaseOps = { auth, db, appId, signInAnonymously, signInWithCustomToken, onAuthStateChanged, doc, setDoc, getDoc, collection, onSnapshot, query, addDoc, updateDoc, deleteDoc };
-    </script>
+    <!-- Firebase SDK (Compat Version for stability in single file) -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
@@ -77,6 +77,7 @@
         };
 
         const App = () => {
+            const [isReady, setIsReady] = useState(false);
             const [user, setUser] = useState(null);
             const [view, setView] = useState('list');
             const [toast, setToast] = useState(null);
@@ -94,56 +95,66 @@
             const voicesRef = useRef([]);
             const lastSpokenSec = useRef(-1);
 
-            // 1. Firebase Auth Initialization
+            // Firebase Initialize
             useEffect(() => {
-                const { auth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FirebaseOps;
-                const initAuth = async () => {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
+                try {
+                    const firebaseConfig = JSON.parse(__firebase_config);
+                    if (!firebase.apps.length) {
+                        firebase.initializeApp(firebaseConfig);
                     }
-                };
-                initAuth();
-                const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
-                return () => unsubscribe();
+                    
+                    const auth = firebase.auth();
+                    const db = firebase.firestore();
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'espresso-timer-default';
+
+                    // Auth Logic
+                    const initAuth = async () => {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await auth.signInWithCustomToken(__initial_auth_token);
+                        } else {
+                            await auth.signInAnonymously();
+                        }
+                    };
+
+                    initAuth().catch(err => console.error("Auth Failed", err));
+
+                    const unsubscribeAuth = auth.onAuthStateChanged((u) => {
+                        setUser(u);
+                        if (u) {
+                            // Subscribe to Recipes
+                            const recipesRef = db.collection('artifacts').doc(appId).collection('users').doc(u.uid).collection('recipes');
+                            const unsubscribeRecipes = recipesRef.onSnapshot((snapshot) => {
+                                const loaded = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                                if (loaded.length === 0) {
+                                    const defaultRecipe = {
+                                        name: 'Classic Flair 58 Profile',
+                                        dose: 18, yield: 36, temp: 93,
+                                        steps: [
+                                            { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
+                                            { name: 'Ramp Up', duration: 3, pressure: 2, pressureEnd: 9 },
+                                            { name: 'Main Extraction', duration: 20, pressure: 9, pressureEnd: 9 },
+                                            { name: 'Tapering', duration: 7, pressure: 9, pressureEnd: 6 }
+                                        ]
+                                    };
+                                    recipesRef.add(defaultRecipe);
+                                } else {
+                                    setRecipes(loaded);
+                                    setIsReady(true);
+                                }
+                            });
+                        }
+                    });
+
+                    return () => unsubscribeAuth();
+                } catch (e) {
+                    console.error("Firebase Setup Error", e);
+                }
             }, []);
-
-            // 2. Real-time Firestore Subscription
-            useEffect(() => {
-                if (!user) return;
-                const { db, appId, collection, onSnapshot } = window.FirebaseOps;
-                const recipesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recipes');
-                
-                const unsubscribe = onSnapshot(recipesRef, (snapshot) => {
-                    const loadedRecipes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    if (loadedRecipes.length === 0) {
-                        // 초기 데이터가 없는 경우 기본값 생성
-                        const defaultRecipe = {
-                            name: 'Classic Flair 58 Profile',
-                            dose: 18, yield: 36, temp: 93,
-                            steps: [
-                                { name: 'Pre-infusion', duration: 10, pressure: 2, pressureEnd: 2 },
-                                { name: 'Ramp Up', duration: 3, pressure: 2, pressureEnd: 9 },
-                                { name: 'Main Extraction', duration: 20, pressure: 9, pressureEnd: 9 },
-                                { name: 'Tapering', duration: 7, pressure: 9, pressureEnd: 6 }
-                            ]
-                        };
-                        window.FirebaseOps.addDoc(recipesRef, defaultRecipe);
-                    } else {
-                        setRecipes(loadedRecipes);
-                    }
-                }, (error) => console.error("Firestore sync error:", error));
-
-                return () => unsubscribe();
-            }, [user]);
 
             useEffect(() => {
                 const loadVoices = () => { voicesRef.current = window.speechSynthesis.getVoices(); };
                 loadVoices();
-                if (window.speechSynthesis.onvoiceschanged !== undefined) {
-                    window.speechSynthesis.onvoiceschanged = loadVoices;
-                }
+                window.speechSynthesis.onvoiceschanged = loadVoices;
             }, []);
 
             const showToast = (msg) => {
@@ -159,7 +170,6 @@
                 const silentAudio = document.getElementById('silent-audio');
                 if (silentAudio) { silentAudio.play().catch(() => {}); }
                 window.speechSynthesis.cancel();
-                if (window.speechSynthesis.paused) { window.speechSynthesis.resume(); }
                 const unlockTTS = new SpeechSynthesisUtterance(" ");
                 unlockTTS.volume = 0;
                 window.speechSynthesis.speak(unlockTTS);
@@ -179,19 +189,6 @@
                     osc.start();
                     osc.stop(audioCtx.current.currentTime + duration);
                 } catch (e) {}
-            };
-
-            const playStepTransition = () => {
-                playBeep(880, 0.15, 'square', 0.2);
-                setTimeout(() => playBeep(880, 0.1, 'square', 0.2), 200);
-            };
-
-            const playFinalBell = () => {
-                let delay = 0;
-                [1, 2, 3].forEach(() => {
-                    setTimeout(() => playBeep(1200, 0.8, 'sine', 0.25), delay);
-                    delay += 800;
-                });
             };
 
             const speak = (text) => {
@@ -218,7 +215,7 @@
                     acc += stepDuration;
                     if (time < acc) return { idx: i, remainingInStep: acc - time, totalInStep: stepDuration };
                 }
-                return { idx: currentRecipe.steps.length - 1, remainingInStep: 0, totalInStep: currentRecipe.steps[currentRecipe.steps.length - 1].duration };
+                return { idx: currentRecipe.steps.length - 1, remainingInStep: 0, totalInStep: 0 };
             };
 
             useEffect(() => {
@@ -232,7 +229,6 @@
                         setCountdown(prev => {
                             if (prev <= 1) {
                                 setStatus('running');
-                                playStepTransition();
                                 speak(currentRecipe.steps[0].name);
                                 lastSpokenSec.current = -1; 
                                 return 0;
@@ -252,7 +248,6 @@
                         const { idx: stepIdx, remainingInStep, totalInStep } = getStepInfoAtTime(now);
                         if (stepIdx !== activeStepIdx && stepIdx < currentRecipe.steps.length) {
                             setActiveStepIdx(stepIdx);
-                            playStepTransition();
                             speak(currentRecipe.steps[stepIdx].name);
                             lastSpokenSec.current = -1;
                         }
@@ -267,7 +262,6 @@
                         if (now >= totalDuration) {
                             setElapsedTime(totalDuration);
                             setStatus('finished');
-                            playFinalBell();
                             speak("추출 완료");
                             clearInterval(timerRef.current);
                         } else {
@@ -280,38 +274,39 @@
 
             const handleSave = async () => {
                 if (!user) return;
-                const { db, appId, doc, updateDoc, addDoc, collection } = window.FirebaseOps;
+                const db = firebase.firestore();
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'espresso-timer-default';
+                const recipesRef = db.collection('artifacts').doc(appId).collection('users').doc(user.uid).collection('recipes');
+                
                 try {
                     if (editedRecipe.id) {
-                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'recipes', editedRecipe.id);
-                        const { id, ...data } = editedRecipe;
-                        await updateDoc(docRef, data);
+                        await recipesRef.doc(editedRecipe.id).update(editedRecipe);
                     } else {
-                        const recipesRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recipes');
-                        await addDoc(recipesRef, editedRecipe);
+                        await recipesRef.add(editedRecipe);
                     }
                     setView('list');
                     showToast("저장되었습니다.");
                 } catch (e) {
-                    showToast("저장 중 오류 발생");
+                    showToast("저장 실패");
                 }
             };
 
             const handleDelete = async () => {
                 if (!user || recipes.length <= 1) return;
-                const { db, appId, doc, deleteDoc } = window.FirebaseOps;
+                const db = firebase.firestore();
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'espresso-timer-default';
                 try {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recipes', editedRecipe.id));
+                    await db.collection('artifacts').doc(appId).collection('users').doc(user.uid).collection('recipes').doc(editedRecipe.id).delete();
                     setSelectedIdx(0);
                     setView('list');
                     showToast("삭제되었습니다.");
                 } catch (e) {
-                    showToast("삭제 오류");
+                    showToast("삭제 실패");
                 }
             };
 
             const ProgressGraph = ({ recipe, time, showIndicator = true }) => {
-                if (!recipe || !recipe.steps || recipe.steps.length === 0) return null;
+                if (!recipe || !recipe.steps) return null;
                 const recipeTotal = recipe.steps.reduce((acc, s) => acc + s.duration, 0);
                 let currentX = 20;
                 const points = [`20,${90 - (recipe.steps[0].pressure / 11) * 80}`];
@@ -333,6 +328,15 @@
                 );
             };
 
+            if (!isReady) {
+                return (
+                    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400">
+                        <div className="loader mb-4"></div>
+                        <p className="text-sm font-bold tracking-widest uppercase">Initializing Cloud Data</p>
+                    </div>
+                );
+            }
+
             if (view === 'list') {
                 return (
                     <div className="min-h-screen safe-top safe-bottom px-6 py-8 flex flex-col items-center">
@@ -340,15 +344,14 @@
                             <div className="flex justify-between items-center mb-10">
                                 <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent italic">FLAIR 58</h1>
                                 <button onClick={() => {
-                                    const r = { name: 'New Recipe', dose: 18, yield: 36, temp: 93, 
+                                    setEditedRecipe({ name: 'New Recipe', dose: 18, yield: 36, temp: 93, 
                                         steps: [
                                             { name: 'Pre-infusion', duration: 8, pressure: 2, pressureEnd: 3 },
                                             { name: 'Ramp-up', duration: 3, pressure: 3, pressureEnd: 9 },
                                             { name: 'Main-extraction', duration: 10, pressure: 9, pressureEnd: 9 },
                                             { name: 'Tapering', duration: 8, pressure: 9, pressureEnd: 4 }
                                         ] 
-                                    };
-                                    setEditedRecipe(r);
+                                    });
                                     setSelectedIdx(recipes.length);
                                     setView('detail');
                                 }} className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-900/20 text-white"><Icon name="plus" /></button>
@@ -356,9 +359,9 @@
                             <div className="space-y-4">
                                 {recipes.map((r, i) => (
                                     <div key={r.id} onClick={() => { setSelectedIdx(i); setEditedRecipe({...r}); setView('detail'); }} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 active:scale-95 transition-transform cursor-pointer">
-                                        <div className="flex justify-between items-start mb-4">
+                                        <div className="flex justify-between items-start mb-4 text-white">
                                             <div>
-                                                <h2 className="text-xl font-bold mb-2 text-white">{r.name}</h2>
+                                                <h2 className="text-xl font-bold mb-2">{r.name}</h2>
                                                 <div className="flex gap-4 text-xs font-bold text-slate-400 uppercase tracking-widest">
                                                     <span className="bg-slate-800 px-2 py-0.5 rounded text-white">{r.dose}g</span>
                                                     <span className="bg-blue-900/30 px-2 py-0.5 rounded text-blue-400">{r.yield}g</span>
@@ -388,7 +391,7 @@
                                     <button onClick={handleDelete} className="p-3 bg-rose-500/10 text-rose-500 rounded-xl"><Icon name="trash-2" size={20}/></button>
                                 </div>
                             </div>
-                            <input className="w-full bg-transparent text-3xl font-black mb-8 focus:outline-none text-white border-b border-white/10 pb-2" value={editedRecipe.name} onChange={e => setEditedRecipe({...editedRecipe, name: e.target.value})} />
+                            <input className="w-full bg-transparent text-3xl font-black mb-8 focus:outline-none border-b border-white/10 pb-2 text-white" value={editedRecipe.name} onChange={e => setEditedRecipe({...editedRecipe, name: e.target.value})} />
                             <div className="grid grid-cols-3 gap-3 mb-8">
                                 <div className="bg-slate-900 p-4 rounded-3xl border border-slate-800 text-center">
                                     <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">Dose</div>
@@ -408,7 +411,7 @@
                                 {editedRecipe.steps.map((s, idx) => (
                                     <div key={idx} className="bg-slate-900 p-5 rounded-3xl border border-slate-800">
                                         <div className="flex gap-2 mb-4">
-                                            <input className="flex-1 bg-slate-800 rounded-xl px-4 py-3 text-sm font-bold text-white focus:ring-1 ring-blue-500 focus:outline-none" value={s.name} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].name = e.target.value; setEditedRecipe({...editedRecipe, steps: ns}); }} />
+                                            <input className="flex-1 bg-slate-800 rounded-xl px-4 py-3 text-sm font-bold text-white focus:outline-none" value={s.name} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].name = e.target.value; setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                             <div className="flex items-center gap-2 bg-slate-800 px-3 rounded-xl">
                                                 <input type="number" className="w-8 bg-transparent text-center font-mono text-blue-400 font-bold focus:outline-none" value={s.duration} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].duration = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                                 <span className="text-[10px] text-slate-500 font-bold">S</span>
@@ -417,20 +420,19 @@
                                         <div className="space-y-4">
                                             <div>
                                                 <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1"><span>START PRESSURE</span><span>{s.pressure} BAR</span></div>
-                                                <input type="range" min="0" max="11" step="0.5" className="w-full" value={s.pressure} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].pressure = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
+                                                <input type="range" min="0" max="11" step="0.5" value={s.pressure} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].pressure = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                             </div>
                                             <div>
                                                 <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1"><span>END PRESSURE</span><span>{s.pressureEnd || s.pressure} BAR</span></div>
-                                                <input type="range" min="0" max="11" step="0.5" className="w-full" value={s.pressureEnd || s.pressure} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].pressureEnd = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
+                                                <input type="range" min="0" max="11" step="0.5" value={s.pressureEnd || s.pressure} onChange={e => { const ns = [...editedRecipe.steps]; ns[idx].pressureEnd = Number(e.target.value); setEditedRecipe({...editedRecipe, steps: ns}); }} />
                                             </div>
                                         </div>
                                     </div>
                                 ))}
-                                <button onClick={() => setEditedRecipe({...editedRecipe, steps: [...editedRecipe.steps, { name: 'Step', duration: 10, pressure: 6, pressureEnd: 6 }]})} className="w-full py-5 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 font-bold hover:bg-slate-900/50 transition-colors">+ 단계 추가</button>
                             </div>
                             <div className="fixed bottom-0 left-0 w-full p-6 safe-bottom bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent z-40">
                                 <div className="max-w-md mx-auto flex gap-3">
-                                    <button onClick={handleSave} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white hover:bg-slate-700 transition-colors">저장</button>
+                                    <button onClick={handleSave} className="flex-1 py-5 bg-slate-800 rounded-[2rem] font-bold text-white active:scale-95 transition-transform">저장</button>
                                     <button onClick={() => { fastUnlockAudio(); setElapsedTime(0); setActiveStepIdx(0); setCountdown(5); lastSpokenSec.current = -1; setStatus('countdown'); setView('active'); }} className="flex-[2] py-5 bg-blue-600 rounded-[2rem] font-black text-xl text-white shadow-2xl active:scale-95 transition-transform">추출 시작</button>
                                 </div>
                             </div>
@@ -441,7 +443,7 @@
 
             const activeStep = currentRecipe?.steps[activeStepIdx];
             return (
-                <div className="min-h-screen safe-top safe-bottom p-8 flex flex-col items-center overflow-hidden text-white bg-slate-950">
+                <div className="min-h-screen safe-top safe-bottom p-8 flex flex-col items-center bg-slate-950 text-white overflow-hidden">
                     <div className="w-full max-w-md h-full flex flex-col">
                         <header className="flex justify-between items-start mb-4">
                             <div className="space-y-2">
@@ -453,7 +455,7 @@
                         
                         <main className="flex-1 flex flex-col justify-center">
                             {status === 'countdown' ? (
-                                <div className="text-center h-[300px] flex flex-col justify-center">
+                                <div className="text-center">
                                     <div className="text-[12rem] font-black text-blue-500 leading-none drop-shadow-[0_0_30px_rgba(59,130,246,0.3)]">{countdown}</div>
                                     <div className="text-xl font-bold tracking-[0.5em] text-slate-600 uppercase mt-4">준비하세요</div>
                                 </div>
@@ -463,10 +465,10 @@
                                         <div className="text-xl font-bold text-slate-400 uppercase tracking-widest mb-6 bg-slate-900/50 py-2 rounded-full border border-white/5">{activeStep?.name}</div>
                                         <div className="pressure-container">
                                             <div className="flex items-center gap-3">
-                                                <div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-right">{activeStep?.pressure}</div>
-                                                {activeStep?.pressureEnd && activeStep.pressureEnd !== activeStep.pressure ? (
-                                                    <><Icon name="arrow-right" size={40} className="text-slate-600" /><div className="text-[7rem] sm:text-[8rem] font-black leading-none text-white tracking-tighter w-[1.5ch] text-left">{activeStep.pressureEnd}</div></>
-                                                ) : <div className="w-[1.5ch]"></div>}
+                                                <div className="text-[7rem] font-black leading-none text-white tabular-nums">{activeStep?.pressure}</div>
+                                                {activeStep?.pressureEnd && activeStep.pressureEnd !== activeStep.pressure && (
+                                                    <><Icon name="arrow-right" size={40} className="text-slate-600" /><div className="text-[7rem] font-black leading-none text-white tabular-nums">{activeStep.pressureEnd}</div></>
+                                                )}
                                                 <div className="text-2xl font-black text-cyan-500 self-end mb-2 ml-1">BAR</div>
                                             </div>
                                         </div>
